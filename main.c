@@ -334,6 +334,7 @@ GameState run_game(SDL_Renderer* renderer, GameOptions* options, const char* cha
 #pragma endregion
 
 // --- Função Principal com Máquina de Estados de Menu ---
+// --- Função Principal com Máquina de Estados de Menu ---
 int main(int argc, char* argv[]) {
     init_logging();
     SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER);
@@ -363,39 +364,114 @@ int main(int argc, char* argv[]) {
     int sel_diff_scroll_offset = 0;
     
     bool running = true;
+    // --- MUDANÇA 1: Variáveis para rastrear os botões Start e Select ---
+    bool is_start_down = false;
+    bool is_select_down = false;
+
     while (running) {
         SDL_Event e;
+        // Reseta os flags de navegação a cada frame
+        bool nav_up=0, nav_down=0, nav_left=0, nav_right=0, nav_accept=0, nav_back=0;
+
         while (SDL_PollEvent(&e) != 0) {
             if (e.type == SDL_QUIT) { running = false; }
             if (keybind_to_change != -1) { if (e.type == SDL_KEYDOWN) { if (keybind_to_change < 4) options.keybinds_main[keybind_to_change] = e.key.keysym.sym; else options.keybinds_alt[keybind_to_change - 4] = e.key.keysym.sym; keybind_to_change = -1; } continue; }
-            bool nav_up=0, nav_down=0, nav_left=0, nav_right=0, nav_accept=0, nav_back=0;
-            if (e.type == SDL_KEYDOWN) { switch (e.key.keysym.sym) { case SDLK_UP: nav_up=1; break; case SDLK_DOWN: nav_down=1; break; case SDLK_LEFT: nav_left=1; break; case SDLK_RIGHT: nav_right=1; break; case SDLK_RETURN: case SDLK_SPACE: nav_accept=1; break; case SDLK_ESCAPE: nav_back=1; break; } }
-            if (e.type == SDL_CONTROLLERBUTTONDOWN) { switch (e.cbutton.button) { case SDL_CONTROLLER_BUTTON_DPAD_UP: nav_up=1; break; case SDL_CONTROLLER_BUTTON_DPAD_DOWN: nav_down=1; break; case SDL_CONTROLLER_BUTTON_DPAD_LEFT: nav_left=1; break; case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: nav_right=1; break; case SDL_CONTROLLER_BUTTON_A: case SDL_CONTROLLER_BUTTON_START: nav_accept=1; break; case SDL_CONTROLLER_BUTTON_B: case SDL_CONTROLLER_BUTTON_BACK: nav_back=1; break; } }
             
-            if (currentScreen == STATE_SONG_SELECT && song_count > 0) {
+            if (e.type == SDL_KEYDOWN) { 
+                switch (e.key.keysym.sym) { 
+                    case SDLK_UP: nav_up=1; break; 
+                    case SDLK_DOWN: nav_down=1; break; 
+                    case SDLK_LEFT: nav_left=1; break; 
+                    case SDLK_RIGHT: nav_right=1; break; 
+                    case SDLK_RETURN: case SDLK_SPACE: nav_accept=1; break; 
+                    case SDLK_ESCAPE: nav_back=1; break; 
+                } 
+            }
+            // --- MUDANÇA 2: Atualiza o estado dos botões Start/Select no evento do controle ---
+            if (e.type == SDL_CONTROLLERBUTTONDOWN || e.type == SDL_CONTROLLERBUTTONUP) {
+                bool is_down = (e.type == SDL_CONTROLLERBUTTONDOWN);
+
+                // Rastreia o estado dos botões Start (Start) e Back (Select)
+                if (e.cbutton.button == SDL_CONTROLLER_BUTTON_START) {
+                    is_start_down = is_down;
+                }
+                if (e.cbutton.button == SDL_CONTROLLER_BUTTON_BACK) {
+                    is_select_down = is_down;
+                }
+
+                // Lógica de navegação normal (apenas no pressionar)
+                if(is_down) {
+                    switch (e.cbutton.button) { 
+                        case SDL_CONTROLLER_BUTTON_DPAD_UP: nav_up=1; break; 
+                        case SDL_CONTROLLER_BUTTON_DPAD_DOWN: nav_down=1; break; 
+                        case SDL_CONTROLLER_BUTTON_DPAD_LEFT: nav_left=1; break; 
+                        case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: nav_right=1; break; 
+                        case SDL_CONTROLLER_BUTTON_A: nav_accept=1; break; // A também é aceitar
+                        case SDL_CONTROLLER_BUTTON_B: nav_back=1; break;   // B também é voltar
+                        case SDL_CONTROLLER_BUTTON_START: nav_accept=1; break; // Start sozinho é aceitar
+                        case SDL_CONTROLLER_BUTTON_BACK: nav_back=1; break;    // Select sozinho é voltar
+                    }
+                }
+            }
+        }
+
+        // --- MUDANÇA 3: Lógica para a combinação Start + Select ---
+        if (is_start_down && is_select_down) {
+            if (currentScreen == STATE_SONG_SELECT) {
+                log_message(LOG_LEVEL_INFO, "Start+Select pressionado na seleção de músicas. Saindo...");
+                running = false; // Sai do programa
+            } 
+            else if (currentScreen == STATE_RESULTS) {
+                log_message(LOG_LEVEL_INFO, "Start+Select pressionado nos resultados. Voltando ao menu...");
+                currentScreen = STATE_SONG_SELECT; // Volta para a lista de músicas
+                // Reseta os botões para a ação não se repetir no próximo frame
+                is_start_down = false;
+                is_select_down = false;
+            }
+            // Consome os flags de navegação para evitar ação dupla (ex: voltar e sair ao mesmo tempo)
+            nav_accept = false;
+            nav_back = false;
+        }
+
+        // --- Lógica da máquina de estados (permanece a mesma) ---
+        if (currentScreen == STATE_SONG_SELECT) {
+            if (song_count > 0) {
                 if (nav_up) sel_song_idx = (sel_song_idx - 1 + song_count) % song_count;
                 if (nav_down) sel_song_idx = (sel_song_idx + 1) % song_count;
                 if (sel_song_idx < sel_song_scroll_offset) sel_song_scroll_offset = sel_song_idx;
                 if (sel_song_idx >= sel_song_scroll_offset + MAX_VISIBLE_ITEMS) sel_song_scroll_offset = sel_song_idx - MAX_VISIBLE_ITEMS + 1;
 
                 if (nav_accept) { for(int i=0; i<diff_count; i++) free(difficulties[i]); diff_count=0; char path[512]; snprintf(path, sizeof(path), "%sdata/%s", songs[sel_song_idx].prefix, songs[sel_song_idx].name); DIR* dir = opendir(path); if(dir){ while ((entry = readdir(dir)) != NULL) { if (strstr(entry->d_name, ".json")) { difficulties[diff_count++] = strdup(entry->d_name); } } closedir(dir); } sel_diff_idx=0; sel_diff_scroll_offset=0; currentScreen = STATE_DIFFICULTY_SELECT; log_message(LOG_LEVEL_INFO, "Música selecionada: %s", songs[sel_song_idx].name); }
-            } else if (currentScreen == STATE_DIFFICULTY_SELECT && diff_count > 0) {
+            }
+            if (nav_back) { // Adicionado para consistência, embora sair seja Start+Select
+                running = false;
+            }
+        } else if (currentScreen == STATE_DIFFICULTY_SELECT) {
+            if (diff_count > 0) {
                 if (nav_up) sel_diff_idx = (sel_diff_idx - 1 + diff_count) % diff_count;
                 if (nav_down) sel_diff_idx = (sel_diff_idx + 1) % diff_count;
                 if (sel_diff_idx < sel_diff_scroll_offset) sel_diff_scroll_offset = sel_diff_idx;
                 if (sel_diff_idx >= sel_diff_scroll_offset + MAX_VISIBLE_ITEMS) sel_diff_scroll_offset = sel_diff_idx - MAX_VISIBLE_ITEMS + 1;
-
-                if (nav_accept) { sel_option_idx=0; currentScreen = STATE_OPTIONS; } if (nav_back) { currentScreen = STATE_SONG_SELECT; }
-            } else if (currentScreen == STATE_OPTIONS) {
-                const int opt_count = 5; if (nav_up) sel_option_idx = (sel_option_idx - 1 + opt_count) % opt_count; if (nav_down) sel_option_idx = (sel_option_idx + 1) % opt_count;
-                if (nav_accept) { if (sel_option_idx == 3) { currentScreen = STATE_KEYBINDS; sel_option_idx=0; } else if (sel_option_idx == 4) { char path[512]; snprintf(path, sizeof(path), "%sdata/%s/%s", songs[sel_song_idx].prefix, songs[sel_song_idx].name, difficulties[sel_diff_idx]); results = run_game(renderer, &options, path); currentScreen = STATE_RESULTS; } }
-                if (nav_left || nav_right) { if (sel_option_idx == 0) { options.scrollDir = (options.scrollDir == SCROLL_UP) ? SCROLL_DOWN : SCROLL_UP; } else if (sel_option_idx == 1) { options.isMiddleScroll = !options.isMiddleScroll; } else if (sel_option_idx == 2) { options.ghostTapping = !options.ghostTapping; } }
-                if (nav_back) { currentScreen = STATE_DIFFICULTY_SELECT; }
-            } else if (currentScreen == STATE_KEYBINDS) {
-                const int key_count = 9; if (nav_up) sel_option_idx = (sel_option_idx - 1 + key_count) % key_count; if (nav_down) sel_option_idx = (sel_option_idx + 1) % key_count;
-                if (nav_accept) { if(sel_option_idx < 8) keybind_to_change = sel_option_idx; else currentScreen = STATE_OPTIONS; } if (nav_back) { currentScreen = STATE_OPTIONS; }
-            } else if (currentScreen == STATE_RESULTS) { if(nav_accept || nav_back) { currentScreen = STATE_SONG_SELECT; } }
+            }
+            if (nav_accept) { sel_option_idx=0; currentScreen = STATE_OPTIONS; } 
+            if (nav_back) { currentScreen = STATE_SONG_SELECT; }
+        } else if (currentScreen == STATE_OPTIONS) {
+            const int opt_count = 5; if (nav_up) sel_option_idx = (sel_option_idx - 1 + opt_count) % opt_count; if (nav_down) sel_option_idx = (sel_option_idx + 1) % opt_count;
+            if (nav_accept) { if (sel_option_idx == 3) { currentScreen = STATE_KEYBINDS; sel_option_idx=0; } else if (sel_option_idx == 4) { char path[512]; snprintf(path, sizeof(path), "%sdata/%s/%s", songs[sel_song_idx].prefix, songs[sel_song_idx].name, difficulties[sel_diff_idx]); results = run_game(renderer, &options, path); currentScreen = STATE_RESULTS; } }
+            if (nav_left || nav_right) { if (sel_option_idx == 0) { options.scrollDir = (options.scrollDir == SCROLL_UP) ? SCROLL_DOWN : SCROLL_UP; } else if (sel_option_idx == 1) { options.isMiddleScroll = !options.isMiddleScroll; } else if (sel_option_idx == 2) { options.ghostTapping = !options.ghostTapping; } }
+            if (nav_back) { currentScreen = STATE_DIFFICULTY_SELECT; }
+        } else if (currentScreen == STATE_KEYBINDS) {
+            const int key_count = 9; if (nav_up) sel_option_idx = (sel_option_idx - 1 + key_count) % key_count; if (nav_down) sel_option_idx = (sel_option_idx + 1) % key_count;
+            if (nav_accept) { if(sel_option_idx < 8) keybind_to_change = sel_option_idx; else currentScreen = STATE_OPTIONS; } 
+            if (nav_back) { currentScreen = STATE_OPTIONS; }
+        } else if (currentScreen == STATE_RESULTS) { 
+            // Ação de voltar agora é primariamente Start+Select, mas mantemos as outras opções
+            if(nav_accept || nav_back) { 
+                currentScreen = STATE_SONG_SELECT; 
+            } 
         }
+
+        // --- Lógica de renderização (permanece a mesma) ---
         SDL_SetRenderDrawColor(renderer, 20, 20, 20, 255); SDL_RenderClear(renderer);
         if (currentScreen == STATE_SONG_SELECT) {
             render_text_bitmap(renderer, "Selecione a Musica", SCREEN_WIDTH/2, 30, COLOR_WHITE, true);
@@ -434,7 +510,7 @@ int main(int argc, char* argv[]) {
             sprintf(buffer, "Misses: %d", results.misses); render_text_bitmap(renderer, buffer, 100, 220, COLOR_WHITE, false);
             sprintf(buffer, "Highest Combo: %d", results.highest_combo); render_text_bitmap(renderer, buffer, 100, 280, COLOR_WHITE, false);
             sprintf(buffer, "Score: %d", results.score); render_text_bitmap(renderer, buffer, 100, 310, COLOR_WHITE, false);
-            render_text_bitmap(renderer, "Pressione A/Enter para continuar", SCREEN_WIDTH/2, 420, COLOR_WHITE, true);
+            render_text_bitmap(renderer, "Pressione A/Enter/Start+Select para continuar", SCREEN_WIDTH/2, 420, COLOR_WHITE, true);
         }
         SDL_RenderPresent(renderer); SDL_Delay(1000 / FPS);
     }
