@@ -32,11 +32,21 @@
 
 // --- Estruturas e Enums ---
 #pragma region "Estruturas"
-typedef enum { STATE_SONG_SELECT, STATE_DIFFICULTY_SELECT, STATE_OPTIONS, STATE_KEYBINDS, STATE_PLAYING, STATE_RESULTS } GameScreen;
+// No início do seu código, na seção de Estruturas
+typedef enum { STATE_SONG_SELECT, STATE_DIFFICULTY_SELECT, STATE_OPTIONS, STATE_KEYBINDS, STATE_CONTROLLER_BINDS, STATE_PLAYING, STATE_RESULTS } GameScreen;
 typedef enum { SCROLL_UP, SCROLL_DOWN } ScrollDirection;
 typedef enum { LOG_LEVEL_INFO, LOG_LEVEL_WARN, LOG_LEVEL_ERROR } LogLevel;
 typedef struct { char* name; char* prefix; } SongEntry;
-typedef struct { ScrollDirection scrollDir; bool isMiddleScroll; bool ghostTapping; double noteSpeed; SDL_Keycode keybinds_main[4]; SDL_Keycode keybinds_alt[4]; } GameOptions;
+// Na seção de Estruturas, atualize a GameOptions
+typedef struct {
+    ScrollDirection scrollDir;
+    bool isMiddleScroll;
+    bool ghostTapping;
+    double noteSpeed;
+    SDL_Keycode keybinds_main[4];
+    SDL_Keycode keybinds_alt[4];
+    SDL_GameControllerButton controller_binds[4]; // NOVO: Armazena os botões para Left, Down, Up, Right
+} GameOptions;
 typedef struct { int score; int combo; int sicks; int goods; int bads; int shits; int misses; int highest_combo; int player_note_count; char rating[16]; Uint32 ratingTime; } GameState;
 typedef struct { double timestamp; int type; double sustainLength; bool isPlayer1; bool wasHit; bool canBeHit; } ChartNote;
 typedef struct NoteNode { ChartNote data; SDL_Rect rect; SDL_Rect tail_rect; struct NoteNode* next; } NoteNode;
@@ -279,6 +289,7 @@ GameState run_game(SDL_Renderer* renderer, GameOptions* options, const char* cha
         SDL_Event e;
         while (SDL_PollEvent(&e) != 0) {
             if (e.type == SDL_QUIT || (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE)) { game_running = false; }
+            
             int lane = -1;
             if (e.type == SDL_KEYDOWN || e.type == SDL_KEYUP) {
                 bool is_down = (e.type == SDL_KEYDOWN);
@@ -291,8 +302,21 @@ GameState run_game(SDL_Renderer* renderer, GameOptions* options, const char* cha
             }
             if (e.type == SDL_CONTROLLERBUTTONDOWN || e.type == SDL_CONTROLLERBUTTONUP) {
                 bool is_down = (e.type == SDL_CONTROLLERBUTTONDOWN);
-                switch (e.cbutton.button) { case SDL_CONTROLLER_BUTTON_DPAD_LEFT: case SDL_CONTROLLER_BUTTON_LEFTSHOULDER: lane = 0; break; case SDL_CONTROLLER_BUTTON_DPAD_DOWN: lane = 1; break; case SDL_CONTROLLER_BUTTON_DPAD_UP: lane = 2; break; case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: lane = 3; break; }
-                if(lane != -1) {
+
+                if (is_down && e.cbutton.button == SDL_CONTROLLER_BUTTON_START) {
+                    game_running = false;
+                    break;
+                }
+
+                // --- MUDANÇA: USA OS MAPEAMENTOS PERSONALIZADOS DO CONTROLE ---
+                for (int i = 0; i < 4; i++) {
+                    if (e.cbutton.button == options->controller_binds[i]) {
+                        lane = i;
+                        break;
+                    }
+                }
+                
+                if (lane != -1) {
                     keys_down[lane] = is_down;
                     if(is_down) { NoteNode* hit_note = handle_note_hit(lane, active_notes, &state, song_time, options->ghostTapping); if(hit_note && hit_note->data.sustainLength > 0) player_holding_note[lane] = hit_note; }
                     else { player_holding_note[lane] = NULL; }
@@ -313,6 +337,8 @@ GameState run_game(SDL_Renderer* renderer, GameOptions* options, const char* cha
                 }
             }
         }
+        if (!game_running) break;
+        
         while (next_note < total_notes && all_notes[next_note].timestamp <= song_time + 2000) { NoteNode* n = malloc(sizeof(NoteNode)); n->data = all_notes[next_note++]; n->next = active_notes; active_notes = n; }
         for(int i=0; i<4; i++) { if(player_holding_note[i] != NULL) { double end_time = player_holding_note[i]->data.timestamp + player_holding_note[i]->data.sustainLength; if(!keys_down[i] && song_time < end_time) { state.combo = 0; state.misses++; player_holding_note[i] = NULL; } } }
         NoteNode** ptr = &active_notes;
@@ -333,8 +359,6 @@ GameState run_game(SDL_Renderer* renderer, GameOptions* options, const char* cha
 }
 #pragma endregion
 
-// --- Função Principal com Máquina de Estados de Menu ---
-// --- Função Principal com Máquina de Estados de Menu ---
 int main(int argc, char* argv[]) {
     init_logging();
     SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER);
@@ -347,12 +371,19 @@ int main(int argc, char* argv[]) {
     create_font_texture(renderer);
 
     GameScreen currentScreen = STATE_SONG_SELECT;
-    GameOptions options = {SCROLL_DOWN, false, true, 1.0, {SDLK_LEFT, SDLK_DOWN, SDLK_UP, SDLK_RIGHT}, {SDLK_d, SDLK_f, SDLK_j, SDLK_k}};
+    // --- MUDANÇA: Inicializa os mapeamentos de controle padrão (DPAD) ---
+    GameOptions options = {
+        SCROLL_DOWN, false, true, 1.0, 
+        {SDLK_LEFT, SDLK_DOWN, SDLK_UP, SDLK_RIGHT}, 
+        {SDLK_d, SDLK_f, SDLK_j, SDLK_k},
+        {SDL_CONTROLLER_BUTTON_DPAD_LEFT, SDL_CONTROLLER_BUTTON_DPAD_DOWN, SDL_CONTROLLER_BUTTON_DPAD_UP, SDL_CONTROLLER_BUTTON_DPAD_RIGHT}
+    };
     GameState results;
     SongEntry songs[256]; int song_count = 0;
     char* difficulties[16]; int diff_count = 0;
     int sel_song_idx = 0; int sel_diff_idx = 0; int sel_option_idx = 0;
     int keybind_to_change = -1;
+    int controller_bind_to_change = -1; // Novo estado para esperar input do controle
     
     struct dirent *entry;
 
@@ -364,19 +395,26 @@ int main(int argc, char* argv[]) {
     int sel_diff_scroll_offset = 0;
     
     bool running = true;
-    // --- MUDANÇA 1: Variáveis para rastrear os botões Start e Select ---
     bool is_start_down = false;
     bool is_select_down = false;
 
     while (running) {
         SDL_Event e;
-        // Reseta os flags de navegação a cada frame
         bool nav_up=0, nav_down=0, nav_left=0, nav_right=0, nav_accept=0, nav_back=0;
 
         while (SDL_PollEvent(&e) != 0) {
             if (e.type == SDL_QUIT) { running = false; }
             if (keybind_to_change != -1) { if (e.type == SDL_KEYDOWN) { if (keybind_to_change < 4) options.keybinds_main[keybind_to_change] = e.key.keysym.sym; else options.keybinds_alt[keybind_to_change - 4] = e.key.keysym.sym; keybind_to_change = -1; } continue; }
             
+            // --- MUDANÇA: Captura input para mapear o controle ---
+            if (controller_bind_to_change != -1) {
+                if (e.type == SDL_CONTROLLERBUTTONDOWN) {
+                    options.controller_binds[controller_bind_to_change] = e.cbutton.button;
+                    controller_bind_to_change = -1;
+                }
+                continue; // Ignora outros inputs enquanto espera o mapeamento
+            }
+
             if (e.type == SDL_KEYDOWN) { 
                 switch (e.key.keysym.sym) { 
                     case SDLK_UP: nav_up=1; break; 
@@ -387,65 +425,46 @@ int main(int argc, char* argv[]) {
                     case SDLK_ESCAPE: nav_back=1; break; 
                 } 
             }
-            // --- MUDANÇA 2: Atualiza o estado dos botões Start/Select no evento do controle ---
             if (e.type == SDL_CONTROLLERBUTTONDOWN || e.type == SDL_CONTROLLERBUTTONUP) {
                 bool is_down = (e.type == SDL_CONTROLLERBUTTONDOWN);
-
-                // Rastreia o estado dos botões Start (Start) e Back (Select)
-                if (e.cbutton.button == SDL_CONTROLLER_BUTTON_START) {
-                    is_start_down = is_down;
-                }
-                if (e.cbutton.button == SDL_CONTROLLER_BUTTON_BACK) {
-                    is_select_down = is_down;
-                }
-
-                // Lógica de navegação normal (apenas no pressionar)
+                if (e.cbutton.button == SDL_CONTROLLER_BUTTON_START) is_start_down = is_down;
+                if (e.cbutton.button == SDL_CONTROLLER_BUTTON_BACK) is_select_down = is_down;
+                
                 if(is_down) {
                     switch (e.cbutton.button) { 
                         case SDL_CONTROLLER_BUTTON_DPAD_UP: nav_up=1; break; 
                         case SDL_CONTROLLER_BUTTON_DPAD_DOWN: nav_down=1; break; 
                         case SDL_CONTROLLER_BUTTON_DPAD_LEFT: nav_left=1; break; 
                         case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: nav_right=1; break; 
-                        case SDL_CONTROLLER_BUTTON_A: nav_accept=1; break; // A também é aceitar
-                        case SDL_CONTROLLER_BUTTON_B: nav_back=1; break;   // B também é voltar
-                        case SDL_CONTROLLER_BUTTON_START: nav_accept=1; break; // Start sozinho é aceitar
-                        case SDL_CONTROLLER_BUTTON_BACK: nav_back=1; break;    // Select sozinho é voltar
+                        case SDL_CONTROLLER_BUTTON_A: nav_accept=1; break;
+                        case SDL_CONTROLLER_BUTTON_B:
+                        case SDL_CONTROLLER_BUTTON_BACK:
+                        case SDL_CONTROLLER_BUTTON_START: 
+                            nav_back=1; 
+                            break;
                     }
                 }
             }
         }
 
-        // --- MUDANÇA 3: Lógica para a combinação Start + Select ---
         if (is_start_down && is_select_down) {
-            if (currentScreen == STATE_SONG_SELECT) {
-                log_message(LOG_LEVEL_INFO, "Start+Select pressionado na seleção de músicas. Saindo...");
-                running = false; // Sai do programa
-            } 
+            if (currentScreen == STATE_SONG_SELECT) { running = false; } 
             else if (currentScreen == STATE_RESULTS) {
-                log_message(LOG_LEVEL_INFO, "Start+Select pressionado nos resultados. Voltando ao menu...");
-                currentScreen = STATE_SONG_SELECT; // Volta para a lista de músicas
-                // Reseta os botões para a ação não se repetir no próximo frame
-                is_start_down = false;
-                is_select_down = false;
+                currentScreen = STATE_SONG_SELECT;
+                is_start_down = false; is_select_down = false;
             }
-            // Consome os flags de navegação para evitar ação dupla (ex: voltar e sair ao mesmo tempo)
-            nav_accept = false;
-            nav_back = false;
+            nav_accept = false; nav_back = false;
         }
 
-        // --- Lógica da máquina de estados (permanece a mesma) ---
         if (currentScreen == STATE_SONG_SELECT) {
             if (song_count > 0) {
                 if (nav_up) sel_song_idx = (sel_song_idx - 1 + song_count) % song_count;
                 if (nav_down) sel_song_idx = (sel_song_idx + 1) % song_count;
                 if (sel_song_idx < sel_song_scroll_offset) sel_song_scroll_offset = sel_song_idx;
                 if (sel_song_idx >= sel_song_scroll_offset + MAX_VISIBLE_ITEMS) sel_song_scroll_offset = sel_song_idx - MAX_VISIBLE_ITEMS + 1;
-
                 if (nav_accept) { for(int i=0; i<diff_count; i++) free(difficulties[i]); diff_count=0; char path[512]; snprintf(path, sizeof(path), "%sdata/%s", songs[sel_song_idx].prefix, songs[sel_song_idx].name); DIR* dir = opendir(path); if(dir){ while ((entry = readdir(dir)) != NULL) { if (strstr(entry->d_name, ".json")) { difficulties[diff_count++] = strdup(entry->d_name); } } closedir(dir); } sel_diff_idx=0; sel_diff_scroll_offset=0; currentScreen = STATE_DIFFICULTY_SELECT; log_message(LOG_LEVEL_INFO, "Música selecionada: %s", songs[sel_song_idx].name); }
             }
-            if (nav_back) { // Adicionado para consistência, embora sair seja Start+Select
-                running = false;
-            }
+            if (nav_back) { running = false; }
         } else if (currentScreen == STATE_DIFFICULTY_SELECT) {
             if (diff_count > 0) {
                 if (nav_up) sel_diff_idx = (sel_diff_idx - 1 + diff_count) % diff_count;
@@ -456,22 +475,45 @@ int main(int argc, char* argv[]) {
             if (nav_accept) { sel_option_idx=0; currentScreen = STATE_OPTIONS; } 
             if (nav_back) { currentScreen = STATE_SONG_SELECT; }
         } else if (currentScreen == STATE_OPTIONS) {
-            const int opt_count = 5; if (nav_up) sel_option_idx = (sel_option_idx - 1 + opt_count) % opt_count; if (nav_down) sel_option_idx = (sel_option_idx + 1) % opt_count;
-            if (nav_accept) { if (sel_option_idx == 3) { currentScreen = STATE_KEYBINDS; sel_option_idx=0; } else if (sel_option_idx == 4) { char path[512]; snprintf(path, sizeof(path), "%sdata/%s/%s", songs[sel_song_idx].prefix, songs[sel_song_idx].name, difficulties[sel_diff_idx]); results = run_game(renderer, &options, path); currentScreen = STATE_RESULTS; } }
-            if (nav_left || nav_right) { if (sel_option_idx == 0) { options.scrollDir = (options.scrollDir == SCROLL_UP) ? SCROLL_DOWN : SCROLL_UP; } else if (sel_option_idx == 1) { options.isMiddleScroll = !options.isMiddleScroll; } else if (sel_option_idx == 2) { options.ghostTapping = !options.ghostTapping; } }
+            const int opt_count = (controller != NULL) ? 6 : 5;
+            if (nav_up) sel_option_idx = (sel_option_idx - 1 + opt_count) % opt_count; 
+            if (nav_down) sel_option_idx = (sel_option_idx + 1) % opt_count;
+            if (nav_left || nav_right) { 
+                if (sel_option_idx == 0) { options.scrollDir = (options.scrollDir == SCROLL_UP) ? SCROLL_DOWN : SCROLL_UP; } 
+                else if (sel_option_idx == 1) { options.isMiddleScroll = !options.isMiddleScroll; } 
+                else if (sel_option_idx == 2) { options.ghostTapping = !options.ghostTapping; } 
+            }
+            if (nav_accept) {
+                if (controller != NULL) { // Lógica COM controle
+                    if (sel_option_idx == 3) { currentScreen = STATE_CONTROLLER_BINDS; sel_option_idx=0; }
+                    else if (sel_option_idx == 4) { currentScreen = STATE_KEYBINDS; sel_option_idx=0; }
+                    else if (sel_option_idx == 5) { char path[512]; snprintf(path, sizeof(path), "%sdata/%s/%s", songs[sel_song_idx].prefix, songs[sel_song_idx].name, difficulties[sel_diff_idx]); results = run_game(renderer, &options, path); currentScreen = STATE_RESULTS; }
+                } else { // Lógica SEM controle
+                    if (sel_option_idx == 3) { currentScreen = STATE_KEYBINDS; sel_option_idx=0; }
+                    else if (sel_option_idx == 4) { char path[512]; snprintf(path, sizeof(path), "%sdata/%s/%s", songs[sel_song_idx].prefix, songs[sel_song_idx].name, difficulties[sel_diff_idx]); results = run_game(renderer, &options, path); currentScreen = STATE_RESULTS; }
+                }
+            }
             if (nav_back) { currentScreen = STATE_DIFFICULTY_SELECT; }
         } else if (currentScreen == STATE_KEYBINDS) {
             const int key_count = 9; if (nav_up) sel_option_idx = (sel_option_idx - 1 + key_count) % key_count; if (nav_down) sel_option_idx = (sel_option_idx + 1) % key_count;
             if (nav_accept) { if(sel_option_idx < 8) keybind_to_change = sel_option_idx; else currentScreen = STATE_OPTIONS; } 
             if (nav_back) { currentScreen = STATE_OPTIONS; }
+        } else if (currentScreen == STATE_CONTROLLER_BINDS) {
+            const int bind_count = 5; // 4 direções + Voltar
+            if (nav_up) sel_option_idx = (sel_option_idx - 1 + bind_count) % bind_count;
+            if (nav_down) sel_option_idx = (sel_option_idx + 1) % bind_count;
+            if (nav_accept) {
+                if (sel_option_idx < 4) { // Se selecionou uma direção
+                    controller_bind_to_change = sel_option_idx;
+                } else { // Se selecionou "Voltar"
+                    currentScreen = STATE_OPTIONS;
+                }
+            }
+            if (nav_back) { currentScreen = STATE_OPTIONS; }
         } else if (currentScreen == STATE_RESULTS) { 
-            // Ação de voltar agora é primariamente Start+Select, mas mantemos as outras opções
-            if(nav_accept || nav_back) { 
-                currentScreen = STATE_SONG_SELECT; 
-            } 
+            if(nav_accept || nav_back) { currentScreen = STATE_SONG_SELECT; } 
         }
 
-        // --- Lógica de renderização (permanece a mesma) ---
         SDL_SetRenderDrawColor(renderer, 20, 20, 20, 255); SDL_RenderClear(renderer);
         if (currentScreen == STATE_SONG_SELECT) {
             render_text_bitmap(renderer, "Selecione a Musica", SCREEN_WIDTH/2, 30, COLOR_WHITE, true);
@@ -491,16 +533,37 @@ int main(int argc, char* argv[]) {
                  start_y += 40;
             }
         } else if (currentScreen == STATE_OPTIONS) {
-            render_text_bitmap(renderer, "Opcoes", SCREEN_WIDTH/2, 30, COLOR_WHITE, true); char buffer[128]; int y = 120;
-            sprintf(buffer, "Scroll: <%s>", options.scrollDir == SCROLL_UP ? "Upscroll" : "Downscroll"); render_text_bitmap(renderer, buffer, SCREEN_WIDTH/2, y, (sel_option_idx == 0 ? COLOR_SELECTED : COLOR_WHITE), true); y+=50;
-            sprintf(buffer, "Middlescroll: <%s>", options.isMiddleScroll ? "On" : "Off"); render_text_bitmap(renderer, buffer, SCREEN_WIDTH/2, y, (sel_option_idx == 1 ? COLOR_SELECTED : COLOR_WHITE), true); y+=50;
-            sprintf(buffer, "Ghost Tapping: <%s>", options.ghostTapping ? "On" : "Off"); render_text_bitmap(renderer, buffer, SCREEN_WIDTH/2, y, (sel_option_idx == 2 ? COLOR_SELECTED : COLOR_WHITE), true); y+=50;
-            render_text_bitmap(renderer, "Configurar Teclas", SCREEN_WIDTH/2, y, (sel_option_idx == 3 ? COLOR_SELECTED : COLOR_WHITE), true); y+=100;
-            render_text_bitmap(renderer, "INICIAR JOGO", SCREEN_WIDTH/2, y, (sel_option_idx == 4 ? COLOR_SELECTED : COLOR_WHITE), true);
+            render_text_bitmap(renderer, "Opcoes", SCREEN_WIDTH/2, 30, COLOR_WHITE, true); char buffer[128]; int y = 100;
+            sprintf(buffer, "Scroll: <%s>", options.scrollDir == SCROLL_UP ? "Upscroll" : "Downscroll"); render_text_bitmap(renderer, buffer, SCREEN_WIDTH/2, y, (sel_option_idx == 0 ? COLOR_SELECTED : COLOR_WHITE), true); y+=40;
+            sprintf(buffer, "Middlescroll: <%s>", options.isMiddleScroll ? "On" : "Off"); render_text_bitmap(renderer, buffer, SCREEN_WIDTH/2, y, (sel_option_idx == 1 ? COLOR_SELECTED : COLOR_WHITE), true); y+=40;
+            sprintf(buffer, "Ghost Tapping: <%s>", options.ghostTapping ? "On" : "Off"); render_text_bitmap(renderer, buffer, SCREEN_WIDTH/2, y, (sel_option_idx == 2 ? COLOR_SELECTED : COLOR_WHITE), true); y+=40;
+            
+            if (controller != NULL) {
+                render_text_bitmap(renderer, "Configurar Controle", SCREEN_WIDTH/2, y, (sel_option_idx == 3 ? COLOR_SELECTED : COLOR_WHITE), true); y+=40;
+                render_text_bitmap(renderer, "Configurar Teclas", SCREEN_WIDTH/2, y, (sel_option_idx == 4 ? COLOR_SELECTED : COLOR_WHITE), true); y+=80;
+                render_text_bitmap(renderer, "INICIAR JOGO", SCREEN_WIDTH/2, y, (sel_option_idx == 5 ? COLOR_SELECTED : COLOR_WHITE), true);
+            } else {
+                render_text_bitmap(renderer, "Configurar Teclas", SCREEN_WIDTH/2, y, (sel_option_idx == 3 ? COLOR_SELECTED : COLOR_WHITE), true); y+=80;
+                render_text_bitmap(renderer, "INICIAR JOGO", SCREEN_WIDTH/2, y, (sel_option_idx == 4 ? COLOR_SELECTED : COLOR_WHITE), true);
+            }
         } else if (currentScreen == STATE_KEYBINDS) {
             render_text_bitmap(renderer, "Configurar Teclas", SCREEN_WIDTH/2, 20, COLOR_WHITE, true); int y = 80;
             for(int i=0; i<8; i++) { char buffer[128]; const char* prefix = (i < 4) ? "" : "Alt "; const char* key_name = SDL_GetKeyName( (i<4) ? options.keybinds_main[i] : options.keybinds_alt[i-4] ); sprintf(buffer, "%s%s: <%s>", prefix, (i%4==0)?"Left":(i%4==1)?"Down":(i%4==2)?"Up":"Right", (keybind_to_change == i) ? "..." : key_name); render_text_bitmap(renderer, buffer, SCREEN_WIDTH/2, y, (sel_option_idx == i ? COLOR_SELECTED : COLOR_WHITE), true); y+=35; }
             render_text_bitmap(renderer, "Voltar", SCREEN_WIDTH/2, y+20, (sel_option_idx == 8 ? COLOR_SELECTED : COLOR_WHITE), true);
+        } else if (currentScreen == STATE_CONTROLLER_BINDS) {
+            render_text_bitmap(renderer, "Configurar Controle (Jogo)", SCREEN_WIDTH/2, 30, COLOR_WHITE, true);
+            int y = 120;
+            const char* directions[] = {"Esquerda", "Baixo", "Cima", "Direita"};
+            for(int i=0; i<4; i++) {
+                char buffer[128];
+                const char* button_name = (controller_bind_to_change == i) 
+                    ? "Pressione um botao..." 
+                    : SDL_GameControllerGetStringForButton(options.controller_binds[i]);
+                sprintf(buffer, "%s: <%s>", directions[i], button_name);
+                render_text_bitmap(renderer, buffer, SCREEN_WIDTH/2, y, (sel_option_idx == i ? COLOR_SELECTED : COLOR_WHITE), true);
+                y += 40;
+            }
+            render_text_bitmap(renderer, "Voltar", SCREEN_WIDTH/2, y + 20, (sel_option_idx == 4 ? COLOR_SELECTED : COLOR_WHITE), true);
         } else if (currentScreen == STATE_RESULTS) {
             render_text_bitmap(renderer, "Resultados", SCREEN_WIDTH/2, 30, COLOR_WHITE, true); char buffer[128];
             sprintf(buffer, "Sicks: %d", results.sicks); render_text_bitmap(renderer, buffer, 100, 100, COLOR_WHITE, false);
@@ -510,7 +573,7 @@ int main(int argc, char* argv[]) {
             sprintf(buffer, "Misses: %d", results.misses); render_text_bitmap(renderer, buffer, 100, 220, COLOR_WHITE, false);
             sprintf(buffer, "Highest Combo: %d", results.highest_combo); render_text_bitmap(renderer, buffer, 100, 280, COLOR_WHITE, false);
             sprintf(buffer, "Score: %d", results.score); render_text_bitmap(renderer, buffer, 100, 310, COLOR_WHITE, false);
-            render_text_bitmap(renderer, "Pressione A/Enter/Start+Select para continuar", SCREEN_WIDTH/2, 420, COLOR_WHITE, true);
+            render_text_bitmap(renderer, "Pressione Voltar/A/Enter para continuar", SCREEN_WIDTH/2, 420, COLOR_WHITE, true);
         }
         SDL_RenderPresent(renderer); SDL_Delay(1000 / FPS);
     }
