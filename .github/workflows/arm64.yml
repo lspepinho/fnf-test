@@ -7,8 +7,7 @@ on:
 
 jobs:
   build-native-arm64:
-    # CORREÇÃO: Usando um runner ARM específico. A sintaxe correta é especificar a arquitetura.
-    # Isto selecionará uma máquina virtual ARM64 baseada no Ubuntu 22.04.
+    # CORREÇÃO: Usando o runner ARM64 estável e versionado, conforme sua instrução.
     runs-on: ubuntu-22.04-arm
     
     steps:
@@ -19,19 +18,21 @@ jobs:
     # 2. Compila o jogo DENTRO de um container Docker do Ubuntu 19.10
     - name: Build inside Ubuntu 19.10 Docker container
       run: |
-        # Inicia um container Docker do Ubuntu 19.10 (a versão arm64 será usada automaticamente)
-        # O código do seu repositório é mapeado para a pasta /work dentro do container
+        # Inicia um container Docker do Ubuntu 19.10
+        # O código do repositório é mapeado para a pasta /work dentro do container
         docker run --rm -v "$PWD":/work -w /work \
         ubuntu:19.10 \
         /bin/bash -c " \
-          echo '--- Preparando ambiente do container Ubuntu 19.10 ---' && \
+          echo '--- Sobrescrevendo /etc/apt/sources.list para usar o arquivo de versões antigas ---' && \
           
-          # CORREÇÃO CRÍTICA: Aponta o apt para os repositórios de versões antigas,
-          # senão o 'apt-get update' vai falhar pois o 19.10 não tem mais suporte.
-          sed -i 's/archive.ubuntu.com/old-releases.ubuntu.com/g' /etc/apt/sources.list && \
-          sed -i 's/security.ubuntu.com/old-releases.ubuntu.com/g' /etc/apt/sources.list && \
+          # Este bloco recria o arquivo de fontes para apontar para 'old-releases'
+          cat > /etc/apt/sources.list <<EOF
+        deb http://old-releases.ubuntu.com/ubuntu/ eoan main restricted universe multiverse
+        deb http://old-releases.ubuntu.com/ubuntu/ eoan-updates main restricted universe multiverse
+        deb http://old-releases.ubuntu.com/ubuntu/ eoan-security main restricted universe multiverse
+        EOF
           
-          echo '--- Instalando dependências ---' && \
+          echo '--- Instalando dependências a partir do old-releases ---' && \
           apt-get update && \
           DEBIAN_FRONTEND=noninteractive apt-get install -y \
             build-essential \
@@ -39,8 +40,6 @@ jobs:
             libsdl2-mixer-dev && \
           
           echo '--- Compilando o jogo ---' && \
-          # Compila o 'main.c' para o executável 'renderer'.
-          # Não usamos -static pois o ambiente é idêntico ao de destino, garantindo compatibilidade.
           gcc main.c -o renderer -lSDL2 -lSDL2_mixer -lm && \
           
           echo '--- Compilação finalizada com sucesso! ---' \
