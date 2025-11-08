@@ -30,7 +30,7 @@ jobs:
 
     # 4. Sobe o executável compilado como um artefato
     - name: Upload Artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: renderer
         path: renderer
