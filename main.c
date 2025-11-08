@@ -311,7 +311,6 @@ ChartNote* load_chart(const char* path, int* note_count, double* noteSpeed) {
     *note_count = 0;
 
     int n_arr_tok = -1;
-    // Tenta encontrar "notes" dentro de "song" (formato moderno)
     for (int i = 1; i < r; i++) {
         if (jsoneq(js, &t[i], "song") && t[i+1].type == JSMN_OBJECT) {
             int song_obj_end = skip_token(t, i + 1);
@@ -325,7 +324,6 @@ ChartNote* load_chart(const char* path, int* note_count, double* noteSpeed) {
         }
     }
 
-    // Se não encontrou, tenta encontrar "notes" no nível principal (formato antigo/erect)
     if (n_arr_tok == -1) {
         for (int i = 1; i < r; i++) {
             if (jsoneq(js, &t[i], "notes") && t[i+1].type == JSMN_ARRAY) {
@@ -387,18 +385,27 @@ ChartNote* load_chart(const char* path, int* note_count, double* noteSpeed) {
                 snprintf(ts_s, t[note_ptr+1].end - t[note_ptr+1].start + 1, "%s", js + t[note_ptr+1].start);
                 snprintf(ty_s, t[note_ptr+2].end - t[note_ptr+2].start + 1, "%s", js + t[note_ptr+2].start);
                 
-                // --- MUDANÇA: Lógica de sustain robusta para lidar com o formato do Psych Engine ---
                 if (note_arr->size > 2 && t[note_ptr+3].type == JSMN_PRIMITIVE) {
                     snprintf(sus_s, t[note_ptr+3].end - t[note_ptr+3].start + 1, "%s", js + t[note_ptr+3].start);
                 }
                 
                 int raw_note_type = atoi(ty_s);
                 
-                // --- LÓGICA UNIVERSAL DE ATRIBUIÇÃO DE NOTA ---
-                bool is_player_note = section_must_hit;
+                // --- LÓGICA HÍBRIDA E UNIVERSAL ---
+                bool is_player_note;
+                // A seção é do jogador?
+                if (section_must_hit) {
+                    // Sim. Então as notas do jogador são as da esquerda (< 4)
+                    is_player_note = (raw_note_type < 4);
+                } else {
+                    // Não. As notas do jogador são as da direita (>= 4), assumindo o papel do oponente.
+                    // Isso funciona para Starman Slaughter e também para Blazin', onde não haverá notas >= 4,
+                    // então is_player_note será corretamente 'false'.
+                    is_player_note = (raw_note_type >= 4);
+                }
                 
                 nb[*note_count].timestamp = atof(ts_s);
-                nb[*note_count].type = raw_note_type % 4; // Sempre mapeia para as 4 lanes
+                nb[*note_count].type = raw_note_type % 4;
                 nb[*note_count].sustainLength = atof(sus_s);
                 nb[*note_count].isPlayer1 = is_player_note;
                 nb[*note_count].wasHit = false;
