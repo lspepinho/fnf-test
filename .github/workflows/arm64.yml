@@ -9,7 +9,7 @@ jobs:
   build-native-arm64:
     # CORREÇÃO: Usando um runner ARM específico. A sintaxe correta é especificar a arquitetura.
     # Isto selecionará uma máquina virtual ARM64 baseada no Ubuntu 22.04.
-    runs-on: "ubuntu-22.04-arm64" # Label exato para runners ARM64 no plano gratuito
+    runs-on: ubuntu-22.04-arm64 # Label exato para runners ARM64 no plano gratuito
     
     steps:
     # 1. Baixa o código do seu repositório para o runner
