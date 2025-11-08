@@ -1,0 +1,36 @@
+name: Build Nativo para ARM64 (Ubuntu 22.04)
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-native-arm64:
+    # Usando o runner nativo ARM do GitHub, que é baseado no Ubuntu 22.04
+    runs-on: ubuntu-latest-arm64
+    
+    steps:
+    # 1. Baixa o código do seu repositório
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    # 2. Instala as dependências de compilação
+    - name: Install build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential libsdl2-dev libsdl2-mixer-dev
+
+    # 3. Compila o jogo com linkagem estática para máxima portabilidade
+    - name: Compile the game statically
+      run: |
+        # A flag -static é CRUCIAL para tentar rodar em um sistema mais antigo.
+        # Ela incluirá as bibliotecas SDL e a glibc dentro do executável.
+        gcc main.c -o renderer -static -lSDL2 -lSDL2_mixer -lm
+
+    # 4. Sobe o executável compilado como um artefato
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: renderer
+        path: renderer
