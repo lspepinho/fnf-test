@@ -32,12 +32,22 @@
 
 // --- Estruturas e Enums ---
 #pragma region "Estruturas"
-// No início do seu código, na seção de Estruturas
 typedef enum { STATE_SONG_SELECT, STATE_DIFFICULTY_SELECT, STATE_OPTIONS, STATE_KEYBINDS, STATE_CONTROLLER_BINDS, STATE_PLAYING, STATE_RESULTS } GameScreen;
 typedef enum { SCROLL_UP, SCROLL_DOWN } ScrollDirection;
 typedef enum { LOG_LEVEL_INFO, LOG_LEVEL_WARN, LOG_LEVEL_ERROR } LogLevel;
+
+// --- MUDANÇA: Novas estruturas para um mapeamento de controle flexível ---
+typedef enum { BIND_TYPE_NONE, BIND_TYPE_BUTTON, BIND_TYPE_AXIS } BindType;
+
+typedef struct {
+    BindType type;
+    union {
+        SDL_GameControllerButton button;
+        SDL_GameControllerAxis axis;
+    } bind;
+} ControllerBind;
+
 typedef struct { char* name; char* prefix; } SongEntry;
-// Na seção de Estruturas, atualize a GameOptions
 typedef struct {
     ScrollDirection scrollDir;
     bool isMiddleScroll;
@@ -45,8 +55,9 @@ typedef struct {
     double noteSpeed;
     SDL_Keycode keybinds_main[4];
     SDL_Keycode keybinds_alt[4];
-    SDL_GameControllerButton controller_binds[4]; // NOVO: Armazena os botões para Left, Down, Up, Right
+    ControllerBind controller_binds[4]; // Usa a nova estrutura
 } GameOptions;
+
 typedef struct { int score; int combo; int sicks; int goods; int bads; int shits; int misses; int highest_combo; int player_note_count; char rating[16]; Uint32 ratingTime; } GameState;
 typedef struct { double timestamp; int type; double sustainLength; bool isPlayer1; bool wasHit; bool canBeHit; } ChartNote;
 typedef struct NoteNode { ChartNote data; SDL_Rect rect; SDL_Rect tail_rect; struct NoteNode* next; } NoteNode;
@@ -267,104 +278,258 @@ NoteNode* handle_note_hit(int lane, NoteNode* active_notes, GameState* state, Ui
 }
 void draw_receptors(SDL_Renderer* renderer, const bool keys_down[], GameOptions* options) { int receptor_y = (options->scrollDir == SCROLL_DOWN) ? SCREEN_HEIGHT - 50 : 50; const int* p1_pos = options->isMiddleScroll ? P1_POS_X_MIDDLE : P1_POS_X_CLASSIC; const int* p2_pos = options->isMiddleScroll ? P2_POS_X_MIDDLE : P2_POS_X_CLASSIC; for (int i = 0; i < 4; i++) { SDL_Rect r_p1 = {p1_pos[i], receptor_y, NOTE_SIZE, NOTE_SIZE}; if (keys_down[i]) { SDL_SetRenderDrawColor(renderer, PLAYER_COLORS[i].r, PLAYER_COLORS[i].g, PLAYER_COLORS[i].b, 255); SDL_RenderFillRect(renderer, &r_p1); } else { SDL_SetRenderDrawColor(renderer, 100, 100, 100, 255); SDL_RenderFillRect(renderer, &r_p1); } SDL_Rect r_p2 = {p2_pos[i], receptor_y, NOTE_SIZE, NOTE_SIZE}; SDL_SetRenderDrawColor(renderer, PLAYER_COLORS[i].r, PLAYER_COLORS[i].g, PLAYER_COLORS[i].b, 100); SDL_RenderDrawRect(renderer, &r_p2); } }
 GameState run_game(SDL_Renderer* renderer, GameOptions* options, const char* chart_path) {
-    int total_notes = 0; options->noteSpeed = 1.0; ChartNote* all_notes = load_chart(chart_path, &total_notes, &options->noteSpeed);
-    GameState state = {0}; strcpy(state.rating, ""); if (!all_notes) { return state; }
-    for(int i=0; i < total_notes; i++) { if(all_notes[i].isPlayer1) state.player_note_count++; }
-    char prefix[512] = ""; char song_folder[256] = {0}; char temp_path[1024]; strncpy(temp_path, chart_path, sizeof(temp_path) - 1);
-    char* data_ptr = strstr(temp_path, "data/"); if (data_ptr) { size_t prefix_len = data_ptr - temp_path; if (prefix_len > 0) { strncpy(prefix, temp_path, prefix_len); prefix[prefix_len] = '\0'; } }
-    char *ls = strrchr(temp_path, '/'); if (ls) *ls = '\0';
-    ls = strrchr(temp_path, '/'); if (ls) strncpy(song_folder, ls + 1, sizeof(song_folder)-1);
-    char audio_path[1024]; Mix_Music* music = NULL; Mix_Chunk* p_v = NULL; Mix_Chunk* o_v = NULL;
-    snprintf(audio_path, sizeof(audio_path), "%ssongs/%s/Inst.ogg", prefix, song_folder); music = Mix_LoadMUS(audio_path);
-    if (!music) { snprintf(audio_path, sizeof(audio_path), "%ssongs/%s/Voices.ogg", prefix, song_folder); music = Mix_LoadMUS(audio_path); }
+    int total_notes = 0;
+    options->noteSpeed = 1.0;
+    ChartNote* all_notes = load_chart(chart_path, &total_notes, &options->noteSpeed);
+    GameState state = {0};
+    strcpy(state.rating, "");
+    if (!all_notes) {
+        return state;
+    }
+    for(int i=0; i < total_notes; i++) {
+        if(all_notes[i].isPlayer1) state.player_note_count++;
+    }
+    char prefix[512] = "";
+    char song_folder[256] = {0};
+    char temp_path[1024];
+    strncpy(temp_path, chart_path, sizeof(temp_path) - 1);
+    char* data_ptr = strstr(temp_path, "data/");
+    if (data_ptr) {
+        size_t prefix_len = data_ptr - temp_path;
+        if (prefix_len > 0) {
+            strncpy(prefix, temp_path, prefix_len);
+            prefix[prefix_len] = '\0';
+        }
+    }
+    char *ls = strrchr(temp_path, '/');
+    if (ls) *ls = '\0';
+    ls = strrchr(temp_path, '/');
+    if (ls) strncpy(song_folder, ls + 1, sizeof(song_folder)-1);
+    
+    char audio_path[1024];
+    Mix_Music* music = NULL;
+    Mix_Chunk* p_v = NULL;
+    Mix_Chunk* o_v = NULL;
+    
+    snprintf(audio_path, sizeof(audio_path), "%ssongs/%s/Inst.ogg", prefix, song_folder);
+    music = Mix_LoadMUS(audio_path);
+    if (!music) {
+        snprintf(audio_path, sizeof(audio_path), "%ssongs/%s/Voices.ogg", prefix, song_folder);
+        music = Mix_LoadMUS(audio_path);
+    }
     if(!music) log_message(LOG_LEVEL_ERROR, "Nenhuma faixa de áudio principal encontrada para '%s'.", song_folder);
-    snprintf(audio_path, sizeof(audio_path), "%ssongs/%s/Voices-Player.ogg", prefix, song_folder); p_v = Mix_LoadWAV(audio_path);
-    snprintf(audio_path, sizeof(audio_path), "%ssongs/%s/Voices-Opponent.ogg", prefix, song_folder); o_v = Mix_LoadWAV(audio_path);
-    NoteNode* active_notes = NULL; bool keys_down[4] = {false}; int next_note = 0;
+    
+    snprintf(audio_path, sizeof(audio_path), "%ssongs/%s/Voices-Player.ogg", prefix, song_folder);
+    p_v = Mix_LoadWAV(audio_path);
+    snprintf(audio_path, sizeof(audio_path), "%ssongs/%s/Voices-Opponent.ogg", prefix, song_folder);
+    o_v = Mix_LoadWAV(audio_path);
+    
+    NoteNode* active_notes = NULL;
+    bool keys_down[4] = {false};
+    int next_note = 0;
     NoteNode* player_holding_note[4] = {NULL, NULL, NULL, NULL};
-    if (music) Mix_PlayMusic(music, 1); if (p_v) Mix_PlayChannel(1, p_v, 0); if (o_v) Mix_PlayChannel(2, o_v, 0);
-    Uint32 start_time = SDL_GetTicks(); bool game_running = true;
-
-    // --- MUDANÇA: Variáveis da hotkey agora existem dentro do run_game ---
-    bool is_x_down = false;
-    bool is_y_down = false;
-    bool is_dpleft_down = false;
-    bool is_dpup_down = false;
+    
+    if (music) Mix_PlayMusic(music, 1);
+    if (p_v) Mix_PlayChannel(1, p_v, 0);
+    if (o_v) Mix_PlayChannel(2, o_v, 0);
+    
+    Uint32 start_time = SDL_GetTicks();
+    bool game_running = true;
+    bool is_x_down = false, is_y_down = false, is_dpleft_down = false, is_dpup_down = false;
 
     while (game_running) {
         Uint32 song_time = SDL_GetTicks() - start_time;
         SDL_Event e;
         while (SDL_PollEvent(&e) != 0) {
-            if (e.type == SDL_QUIT || (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE)) { game_running = false; }
+            if (e.type == SDL_QUIT || (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE)) {
+                game_running = false;
+            }
             int lane = -1;
+            
             if (e.type == SDL_KEYDOWN || e.type == SDL_KEYUP) {
                 bool is_down = (e.type == SDL_KEYDOWN);
-                for(int i=0; i<4; i++) { if (e.key.keysym.sym == options->keybinds_main[i] || e.key.keysym.sym == options->keybinds_alt[i]) { lane = i; break; } }
+                for(int i=0; i<4; i++) {
+                    if (e.key.keysym.sym == options->keybinds_main[i] || e.key.keysym.sym == options->keybinds_alt[i]) {
+                        lane = i;
+                        break;
+                    }
+                }
                 if(lane != -1) {
                     keys_down[lane] = is_down;
-                    if(is_down) { NoteNode* hit_note = handle_note_hit(lane, active_notes, &state, song_time, options->ghostTapping); if(hit_note && hit_note->data.sustainLength > 0) player_holding_note[lane] = hit_note; }
-                    else { player_holding_note[lane] = NULL; }
+                    if(is_down) {
+                        NoteNode* hit_note = handle_note_hit(lane, active_notes, &state, song_time, options->ghostTapping);
+                        if(hit_note && hit_note->data.sustainLength > 0) player_holding_note[lane] = hit_note;
+                    } else {
+                        player_holding_note[lane] = NULL;
+                    }
                 }
             }
+            
             if (e.type == SDL_CONTROLLERBUTTONDOWN || e.type == SDL_CONTROLLERBUTTONUP) {
                 bool is_down = (e.type == SDL_CONTROLLERBUTTONDOWN);
-
-                // --- MUDANÇA: Rastreia a hotkey aqui também ---
                 if (e.cbutton.button == SDL_CONTROLLER_BUTTON_X) is_x_down = is_down;
                 if (e.cbutton.button == SDL_CONTROLLER_BUTTON_Y) is_y_down = is_down;
                 if (e.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_LEFT) is_dpleft_down = is_down;
                 if (e.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_UP) is_dpup_down = is_down;
-
+                
                 if (is_down && e.cbutton.button == SDL_CONTROLLER_BUTTON_START) {
                     game_running = false;
                     break;
                 }
-                for (int i = 0; i < 4; i++) { if (e.cbutton.button == options->controller_binds[i]) { lane = i; break; } }
+
+                for (int i = 0; i < 4; i++) {
+                    if (options->controller_binds[i].type == BIND_TYPE_BUTTON && e.cbutton.button == options->controller_binds[i].bind.button) {
+                        lane = i;
+                        break;
+                    }
+                }
                 if (lane != -1) {
                     keys_down[lane] = is_down;
-                    if(is_down) { NoteNode* hit_note = handle_note_hit(lane, active_notes, &state, song_time, options->ghostTapping); if(hit_note && hit_note->data.sustainLength > 0) player_holding_note[lane] = hit_note; }
-                    else { player_holding_note[lane] = NULL; }
+                    if(is_down) {
+                        NoteNode* hit_note = handle_note_hit(lane, active_notes, &state, song_time, options->ghostTapping);
+                        if(hit_note && hit_note->data.sustainLength > 0) player_holding_note[lane] = hit_note;
+                    } else {
+                        player_holding_note[lane] = NULL;
+                    }
                 }
             }
+             
             if (e.type == SDL_CONTROLLERAXISMOTION) {
-                if (e.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERLEFT) {
-                    bool is_down = e.caxis.value > TRIGGER_THRESHOLD;
-                    keys_down[1] = is_down;
-                    if (is_down) { NoteNode* hit_note = handle_note_hit(1, active_notes, &state, song_time, options->ghostTapping); if(hit_note && hit_note->data.sustainLength > 0) player_holding_note[1] = hit_note; }
-                    else { player_holding_note[1] = NULL; }
+                for (int i = 0; i < 4; i++) {
+                    if (options->controller_binds[i].type == BIND_TYPE_AXIS && e.caxis.axis == options->controller_binds[i].bind.axis) {
+                        lane = i;
+                        break;
+                    }
                 }
-                if (e.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERRIGHT) {
+                if (lane != -1) {
                     bool is_down = e.caxis.value > TRIGGER_THRESHOLD;
-                    keys_down[2] = is_down;
-                    if (is_down) { NoteNode* hit_note = handle_note_hit(2, active_notes, &state, song_time, options->ghostTapping); if(hit_note && hit_note->data.sustainLength > 0) player_holding_note[2] = hit_note; }
-                    else { player_holding_note[2] = NULL; }
+                    if (keys_down[lane] != is_down) {
+                        keys_down[lane] = is_down;
+                        if(is_down) {
+                            NoteNode* hit_note = handle_note_hit(lane, active_notes, &state, song_time, options->ghostTapping);
+                            if(hit_note && hit_note->data.sustainLength > 0) player_holding_note[lane] = hit_note;
+                        } else {
+                            player_holding_note[lane] = NULL;
+                        }
+                    }
                 }
             }
         }
 
-        // --- MUDANÇA: Verifica a hotkey a cada frame do jogo ---
         if (is_x_down && is_y_down && is_dpleft_down && is_dpup_down) {
             log_message(LOG_LEVEL_INFO, "Combinação de saída pressionada durante o jogo.");
             game_running = false;
         }
         if (!game_running) break;
 
-        while (next_note < total_notes && all_notes[next_note].timestamp <= song_time + 2000) { NoteNode* n = malloc(sizeof(NoteNode)); n->data = all_notes[next_note++]; n->next = active_notes; active_notes = n; }
-        for(int i=0; i<4; i++) { if(player_holding_note[i] != NULL) { double end_time = player_holding_note[i]->data.timestamp + player_holding_note[i]->data.sustainLength; if(!keys_down[i] && song_time < end_time) { state.combo = 0; state.misses++; player_holding_note[i] = NULL; } } }
+        while (next_note < total_notes && all_notes[next_note].timestamp <= song_time + 2000) {
+            NoteNode* n = malloc(sizeof(NoteNode));
+            n->data = all_notes[next_note++];
+            n->next = active_notes;
+            active_notes = n;
+        }
+
+        for(int i=0; i<4; i++) {
+            if(player_holding_note[i] != NULL) {
+                double end_time = player_holding_note[i]->data.timestamp + player_holding_note[i]->data.sustainLength;
+                if(!keys_down[i] && song_time < end_time) {
+                    state.combo = 0;
+                    state.misses++;
+                    player_holding_note[i] = NULL;
+                }
+            }
+        }
+
         NoteNode** ptr = &active_notes;
-        while (*ptr) { NoteNode* entry = *ptr; double time_diff = entry->data.timestamp - song_time; if (!entry->data.wasHit && entry->data.canBeHit && time_diff < -TIME_WINDOW_MISS) { entry->data.wasHit = true; state.combo = 0; state.misses++; strcpy(state.rating, "MISS"); state.ratingTime = SDL_GetTicks(); } if (time_diff < -1000) { *ptr = entry->next; free(entry); } else { ptr = &entry->next; } }
-        SDL_SetRenderDrawColor(renderer, 20, 20, 20, 255); SDL_RenderClear(renderer);
+        while (*ptr) {
+            NoteNode* entry = *ptr;
+            double time_diff = entry->data.timestamp - song_time;
+            if (!entry->data.wasHit && entry->data.canBeHit && time_diff < -TIME_WINDOW_MISS) {
+                entry->data.wasHit = true;
+                state.combo = 0;
+                state.misses++;
+                strcpy(state.rating, "MISS");
+                state.ratingTime = SDL_GetTicks();
+            }
+            if (time_diff < -1000) {
+                *ptr = entry->next;
+                free(entry);
+            } else {
+                ptr = &entry->next;
+            }
+        }
+        
+        SDL_SetRenderDrawColor(renderer, 20, 20, 20, 255);
+        SDL_RenderClear(renderer);
+        
         draw_receptors(renderer, keys_down, options);
-        const int* p1_pos = options->isMiddleScroll ? P1_POS_X_MIDDLE : P1_POS_X_CLASSIC; const int* p2_pos = options->isMiddleScroll ? P2_POS_X_MIDDLE : P2_POS_X_CLASSIC;
-        for (NoteNode* curr = active_notes; curr != NULL; curr = curr->next) { if (curr->data.wasHit) continue; int type_mod_4 = curr->data.type % 4; curr->rect.x = curr->data.isPlayer1 ? p1_pos[type_mod_4] : p2_pos[type_mod_4]; curr->rect.w = NOTE_SIZE; curr->rect.h = NOTE_SIZE; double time_diff = curr->data.timestamp - song_time; double note_pos = time_diff * options->noteSpeed * 0.25; int receptor_y = (options->scrollDir == SCROLL_DOWN) ? SCREEN_HEIGHT - 50 : 50; curr->rect.y = (options->scrollDir == SCROLL_DOWN) ? receptor_y - note_pos : receptor_y + note_pos; if (curr->data.sustainLength > 0) { double tail_len_px = curr->data.sustainLength * options->noteSpeed * 0.25; curr->tail_rect.x = curr->rect.x + (NOTE_SIZE / 4); curr->tail_rect.w = NOTE_SIZE / 2; if (options->scrollDir == SCROLL_DOWN) { curr->tail_rect.y = curr->rect.y + NOTE_SIZE / 2 - tail_len_px; curr->tail_rect.h = tail_len_px; } else { curr->tail_rect.y = curr->rect.y + NOTE_SIZE / 2; curr->tail_rect.h = tail_len_px; } SDL_SetRenderDrawColor(renderer, PLAYER_COLORS[type_mod_4].r, PLAYER_COLORS[type_mod_4].g, PLAYER_COLORS[type_mod_4].b, 150); SDL_RenderFillRect(renderer, &curr->tail_rect); } SDL_SetRenderDrawColor(renderer, PLAYER_COLORS[type_mod_4].r, PLAYER_COLORS[type_mod_4].g, PLAYER_COLORS[type_mod_4].b, 255); SDL_RenderFillRect(renderer, &curr->rect); }
-        char hud_buffer[64]; sprintf(hud_buffer, "Score: %d", state.score); render_text_bitmap(renderer, hud_buffer, 10, 10, COLOR_WHITE, false); sprintf(hud_buffer, "Misses: %d", state.misses + state.shits); render_text_bitmap(renderer, hud_buffer, 10, 40, COLOR_WHITE, false);
-        if (SDL_GetTicks() - state.ratingTime < 500) { render_text_bitmap(renderer, state.rating, SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 + 100, COLOR_WHITE, true); }
-        SDL_RenderPresent(renderer); SDL_Delay(1000 / FPS);
-        bool end_condition = false; if (music) { if (Mix_PlayingMusic() == 0 && active_notes == NULL) end_condition = true; } else if (total_notes > 0) { if (song_time > all_notes[total_notes - 1].timestamp + 4000) end_condition = true; }
+        
+        const int* p1_pos = options->isMiddleScroll ? P1_POS_X_MIDDLE : P1_POS_X_CLASSIC;
+        const int* p2_pos = options->isMiddleScroll ? P2_POS_X_MIDDLE : P2_POS_X_CLASSIC;
+        
+        for (NoteNode* curr = active_notes; curr != NULL; curr = curr->next) {
+            if (curr->data.wasHit) continue;
+            int type_mod_4 = curr->data.type % 4;
+            curr->rect.x = curr->data.isPlayer1 ? p1_pos[type_mod_4] : p2_pos[type_mod_4];
+            curr->rect.w = NOTE_SIZE;
+            curr->rect.h = NOTE_SIZE;
+            double time_diff = curr->data.timestamp - song_time;
+            double note_pos = time_diff * options->noteSpeed * 0.25;
+            int receptor_y = (options->scrollDir == SCROLL_DOWN) ? SCREEN_HEIGHT - 50 : 50;
+            curr->rect.y = (options->scrollDir == SCROLL_DOWN) ? receptor_y - note_pos : receptor_y + note_pos;
+            
+            if (curr->data.sustainLength > 0) {
+                double tail_len_px = curr->data.sustainLength * options->noteSpeed * 0.25;
+                curr->tail_rect.x = curr->rect.x + (NOTE_SIZE / 4);
+                curr->tail_rect.w = NOTE_SIZE / 2;
+                if (options->scrollDir == SCROLL_DOWN) {
+                    curr->tail_rect.y = curr->rect.y + NOTE_SIZE / 2 - tail_len_px;
+                    curr->tail_rect.h = tail_len_px;
+                } else {
+                    curr->tail_rect.y = curr->rect.y + NOTE_SIZE / 2;
+                    curr->tail_rect.h = tail_len_px;
+                }
+                SDL_SetRenderDrawColor(renderer, PLAYER_COLORS[type_mod_4].r, PLAYER_COLORS[type_mod_4].g, PLAYER_COLORS[type_mod_4].b, 150);
+                SDL_RenderFillRect(renderer, &curr->tail_rect);
+            }
+            SDL_SetRenderDrawColor(renderer, PLAYER_COLORS[type_mod_4].r, PLAYER_COLORS[type_mod_4].g, PLAYER_COLORS[type_mod_4].b, 255);
+            SDL_RenderFillRect(renderer, &curr->rect);
+        }
+        
+        char hud_buffer[64];
+        sprintf(hud_buffer, "Score: %d", state.score);
+        render_text_bitmap(renderer, hud_buffer, 10, 10, COLOR_WHITE, false);
+        sprintf(hud_buffer, "Misses: %d", state.misses + state.shits);
+        render_text_bitmap(renderer, hud_buffer, 10, 40, COLOR_WHITE, false);
+        
+        if (SDL_GetTicks() - state.ratingTime < 500) {
+            render_text_bitmap(renderer, state.rating, SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 + 100, COLOR_WHITE, true);
+        }
+        
+        SDL_RenderPresent(renderer);
+        SDL_Delay(1000 / FPS);
+        
+        bool end_condition = false;
+        if (music) {
+            if (Mix_PlayingMusic() == 0 && active_notes == NULL) end_condition = true;
+        } else if (total_notes > 0) {
+            if (song_time > all_notes[total_notes - 1].timestamp + 4000) end_condition = true;
+        }
         if(end_condition) game_running = false;
     }
-    while(active_notes) { NoteNode* temp = active_notes; active_notes = active_notes->next; free(temp); }
-    free(all_notes); Mix_HaltMusic(); Mix_HaltChannel(-1); if(music) Mix_FreeMusic(music); if(p_v) Mix_FreeChunk(p_v); if(o_v) Mix_FreeChunk(o_v);
+    
+    while(active_notes) {
+        NoteNode* temp = active_notes;
+        active_notes = active_notes->next;
+        free(temp);
+    }
+    free(all_notes);
+    Mix_HaltMusic();
+    Mix_HaltChannel(-1);
+    if(music) Mix_FreeMusic(music);
+    if(p_v) Mix_FreeChunk(p_v);
+    if(o_v) Mix_FreeChunk(o_v);
+    
     return state;
 }
 #pragma endregion
@@ -373,7 +538,7 @@ int main(int argc, char* argv[]) {
     init_logging();
     SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER);
 
-    // --- MUDANÇA: Mudei para 1 canal (Mono) e adicionei verificação de erro ---
+    // --- MUDANÇA: Áudio configurado para 1 canal (Mono) com verificação de erro ---
     if (Mix_OpenAudio(44100, MIX_DEFAULT_FORMAT, 1, 2048) < 0) {
         log_message(LOG_LEVEL_ERROR, "SDL_mixer não pôde ser inicializado! Erro: %s", Mix_GetError());
     }
@@ -385,12 +550,20 @@ int main(int argc, char* argv[]) {
     create_font_texture(renderer);
 
     GameScreen currentScreen = STATE_SONG_SELECT;
+    
+    // --- MUDANÇA: Inicializa a nova estrutura de mapeamento de controle ---
     GameOptions options = {
-        SCROLL_DOWN, false, true, 1.0, 
-        {SDLK_LEFT, SDLK_DOWN, SDLK_UP, SDLK_RIGHT}, 
-        {SDLK_d, SDLK_f, SDLK_j, SDLK_k},
-        {SDL_CONTROLLER_BUTTON_DPAD_LEFT, SDL_CONTROLLER_BUTTON_DPAD_DOWN, SDL_CONTROLLER_BUTTON_DPAD_UP, SDL_CONTROLLER_BUTTON_DPAD_RIGHT}
+        .scrollDir = SCROLL_DOWN, .isMiddleScroll = false, .ghostTapping = true, .noteSpeed = 1.0, 
+        .keybinds_main = {SDLK_LEFT, SDLK_DOWN, SDLK_UP, SDLK_RIGHT}, 
+        .keybinds_alt = {SDLK_d, SDLK_f, SDLK_j, SDLK_k},
+        .controller_binds = {
+            {.type = BIND_TYPE_BUTTON, .bind.button = SDL_CONTROLLER_BUTTON_DPAD_LEFT},
+            {.type = BIND_TYPE_BUTTON, .bind.button = SDL_CONTROLLER_BUTTON_DPAD_DOWN},
+            {.type = BIND_TYPE_BUTTON, .bind.button = SDL_CONTROLLER_BUTTON_DPAD_UP},
+            {.type = BIND_TYPE_BUTTON, .bind.button = SDL_CONTROLLER_BUTTON_DPAD_RIGHT},
+        }
     };
+    
     GameState results;
     SongEntry songs[256]; int song_count = 0;
     char* difficulties[16]; int diff_count = 0;
@@ -408,10 +581,7 @@ int main(int argc, char* argv[]) {
     int sel_diff_scroll_offset = 0;
     
     bool running = true;
-    bool is_x_down = false;
-    bool is_y_down = false;
-    bool is_dpleft_down = false;
-    bool is_dpup_down = false;
+    bool is_x_down = false, is_y_down = false, is_dpleft_down = false, is_dpup_down = false;
 
     while (running) {
         SDL_Event e;
@@ -420,10 +590,18 @@ int main(int argc, char* argv[]) {
         while (SDL_PollEvent(&e) != 0) {
             if (e.type == SDL_QUIT) { running = false; }
             if (keybind_to_change != -1) { if (e.type == SDL_KEYDOWN) { if (keybind_to_change < 4) options.keybinds_main[keybind_to_change] = e.key.keysym.sym; else options.keybinds_alt[keybind_to_change - 4] = e.key.keysym.sym; keybind_to_change = -1; } continue; }
+            
             if (controller_bind_to_change != -1) {
                 if (e.type == SDL_CONTROLLERBUTTONDOWN) {
-                    options.controller_binds[controller_bind_to_change] = e.cbutton.button;
+                    options.controller_binds[controller_bind_to_change].type = BIND_TYPE_BUTTON;
+                    options.controller_binds[controller_bind_to_change].bind.button = e.cbutton.button;
                     controller_bind_to_change = -1;
+                } else if (e.type == SDL_CONTROLLERAXISMOTION) {
+                    if (abs(e.caxis.value) > TRIGGER_THRESHOLD) {
+                        options.controller_binds[controller_bind_to_change].type = BIND_TYPE_AXIS;
+                        options.controller_binds[controller_bind_to_change].bind.axis = e.caxis.axis;
+                        controller_bind_to_change = -1;
+                    }
                 }
                 continue;
             }
@@ -460,17 +638,15 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        // --- MUDANÇA: Lógica de hotkey só se aplica à tela de seleção de música ---
         if (is_x_down && is_y_down && is_dpleft_down && is_dpup_down) {
             if (currentScreen == STATE_SONG_SELECT) {
                 log_message(LOG_LEVEL_INFO, "Combinação de saída pressionada. Saindo...");
-                running = false; // Sai do programa
+                running = false;
             }
             is_x_down = is_y_down = is_dpleft_down = is_dpup_down = false;
             nav_accept = false; nav_back = false;
         }
 
-        // Lógica da máquina de estados (sem alterações)
         if (currentScreen == STATE_SONG_SELECT) {
             if (song_count > 0) {
                 if (nav_up) sel_song_idx = (sel_song_idx - 1 + song_count) % song_count;
@@ -499,11 +675,11 @@ int main(int argc, char* argv[]) {
                 else if (sel_option_idx == 2) { options.ghostTapping = !options.ghostTapping; } 
             }
             if (nav_accept) {
-                if (controller != NULL) { // Lógica COM controle
+                if (controller != NULL) {
                     if (sel_option_idx == 3) { currentScreen = STATE_CONTROLLER_BINDS; sel_option_idx=0; }
                     else if (sel_option_idx == 4) { currentScreen = STATE_KEYBINDS; sel_option_idx=0; }
                     else if (sel_option_idx == 5) { char path[512]; snprintf(path, sizeof(path), "%sdata/%s/%s", songs[sel_song_idx].prefix, songs[sel_song_idx].name, difficulties[sel_diff_idx]); results = run_game(renderer, &options, path); currentScreen = STATE_RESULTS; }
-                } else { // Lógica SEM controle
+                } else {
                     if (sel_option_idx == 3) { currentScreen = STATE_KEYBINDS; sel_option_idx=0; }
                     else if (sel_option_idx == 4) { char path[512]; snprintf(path, sizeof(path), "%sdata/%s/%s", songs[sel_song_idx].prefix, songs[sel_song_idx].name, difficulties[sel_diff_idx]); results = run_game(renderer, &options, path); currentScreen = STATE_RESULTS; }
                 }
@@ -514,13 +690,13 @@ int main(int argc, char* argv[]) {
             if (nav_accept) { if(sel_option_idx < 8) keybind_to_change = sel_option_idx; else currentScreen = STATE_OPTIONS; } 
             if (nav_back) { currentScreen = STATE_OPTIONS; }
         } else if (currentScreen == STATE_CONTROLLER_BINDS) {
-            const int bind_count = 5; // 4 direções + Voltar
+            const int bind_count = 5;
             if (nav_up) sel_option_idx = (sel_option_idx - 1 + bind_count) % bind_count;
             if (nav_down) sel_option_idx = (sel_option_idx + 1) % bind_count;
             if (nav_accept) {
-                if (sel_option_idx < 4) { // Se selecionou uma direção
+                if (sel_option_idx < 4) {
                     controller_bind_to_change = sel_option_idx;
-                } else { // Se selecionou "Voltar"
+                } else {
                     currentScreen = STATE_OPTIONS;
                 }
             }
@@ -571,10 +747,17 @@ int main(int argc, char* argv[]) {
             const char* directions[] = {"Esquerda", "Baixo", "Cima", "Direita"};
             for(int i=0; i<4; i++) {
                 char buffer[128];
-                const char* button_name = (controller_bind_to_change == i) 
-                    ? "Pressione um botao..." 
-                    : SDL_GameControllerGetStringForButton(options.controller_binds[i]);
-                sprintf(buffer, "%s: <%s>", directions[i], button_name ? button_name : "N/A");
+                const char* bind_name = "N/A";
+                if (controller_bind_to_change == i) {
+                    bind_name = "Pressione um botao/gatilho...";
+                } else {
+                    if (options.controller_binds[i].type == BIND_TYPE_BUTTON) {
+                        bind_name = SDL_GameControllerGetStringForButton(options.controller_binds[i].bind.button);
+                    } else if (options.controller_binds[i].type == BIND_TYPE_AXIS) {
+                        bind_name = SDL_GameControllerGetStringForAxis(options.controller_binds[i].bind.axis);
+                    }
+                }
+                sprintf(buffer, "%s: <%s>", directions[i], bind_name ? bind_name : "N/A");
                 render_text_bitmap(renderer, buffer, SCREEN_WIDTH/2, y, (sel_option_idx == i ? COLOR_SELECTED : COLOR_WHITE), true);
                 y += 40;
             }
