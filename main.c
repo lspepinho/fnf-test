@@ -311,8 +311,6 @@ ChartNote* load_chart(const char* path, int* note_count, double* noteSpeed) {
     *note_count = 0;
 
     int n_arr_tok = -1;
-    // --- MUDANÇA: LÓGICA DE FALLBACK ---
-    // 1. Tenta encontrar "notes" dentro de "song" (formato moderno)
     for (int i = 1; i < r; i++) {
         if (jsoneq(js, &t[i], "song") && t[i+1].type == JSMN_OBJECT) {
             int song_obj_end = skip_token(t, i + 1);
@@ -326,7 +324,6 @@ ChartNote* load_chart(const char* path, int* note_count, double* noteSpeed) {
         }
     }
 
-    // 2. Se não encontrou, tenta encontrar "notes" no nível principal (formato antigo/erect)
     if (n_arr_tok == -1) {
         for (int i = 1; i < r; i++) {
             if (jsoneq(js, &t[i], "notes") && t[i+1].type == JSMN_ARRAY) {
@@ -387,10 +384,11 @@ ChartNote* load_chart(const char* path, int* note_count, double* noteSpeed) {
                 
                 snprintf(ts_s, t[note_ptr+1].end - t[note_ptr+1].start + 1, "%s", js + t[note_ptr+1].start);
                 snprintf(ty_s, t[note_ptr+2].end - t[note_ptr+2].start + 1, "%s", js + t[note_ptr+2].start);
-                if (note_arr->size > 2) {
-                    if(t[note_ptr+3].type == JSMN_PRIMITIVE){
-                        snprintf(sus_s, t[note_ptr+3].end - t[note_ptr+3].start + 1, "%s", js + t[note_ptr+3].start);
-                    }
+                
+                // --- MUDANÇA: Lógica de sustain robusta ---
+                // Só lê o terceiro valor se ele existir E for um número.
+                if (note_arr->size > 2 && t[note_ptr+3].type == JSMN_PRIMITIVE) {
+                    snprintf(sus_s, t[note_ptr+3].end - t[note_ptr+3].start + 1, "%s", js + t[note_ptr+3].start);
                 }
                 
                 int raw_note_type = atoi(ty_s);
@@ -703,7 +701,6 @@ int main(int argc, char* argv[]) {
     init_logging();
     SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER);
 
-    // --- MUDANÇA: Áudio configurado para 1 canal (Mono) com verificação de erro ---
     if (Mix_OpenAudio(44100, MIX_DEFAULT_FORMAT, 1, 2048) < 0) {
         log_message(LOG_LEVEL_ERROR, "SDL_mixer não pôde ser inicializado! Erro: %s", Mix_GetError());
     }
@@ -716,7 +713,6 @@ int main(int argc, char* argv[]) {
 
     GameScreen currentScreen = STATE_SONG_SELECT;
     
-    // --- MUDANÇA: Inicializa a nova estrutura de mapeamento de controle ---
     GameOptions options = {
         .scrollDir = SCROLL_DOWN, .isMiddleScroll = false, .ghostTapping = true, .noteSpeed = 1.0, 
         .keybinds_main = {SDLK_LEFT, SDLK_DOWN, SDLK_UP, SDLK_RIGHT}, 
@@ -928,14 +924,34 @@ int main(int argc, char* argv[]) {
             }
             render_text_bitmap(renderer, "Voltar", SCREEN_WIDTH/2, y + 20, (sel_option_idx == 4 ? COLOR_SELECTED : COLOR_WHITE), true);
         } else if (currentScreen == STATE_RESULTS) {
-            render_text_bitmap(renderer, "Resultados", SCREEN_WIDTH/2, 30, COLOR_WHITE, true); char buffer[128];
-            sprintf(buffer, "Sicks: %d", results.sicks); render_text_bitmap(renderer, buffer, 100, 100, COLOR_WHITE, false);
-            sprintf(buffer, "Goods: %d", results.goods); render_text_bitmap(renderer, buffer, 100, 130, COLOR_WHITE, false);
-            sprintf(buffer, "Bads: %d", results.bads); render_text_bitmap(renderer, buffer, 100, 160, COLOR_WHITE, false);
-            sprintf(buffer, "Shits: %d", results.shits); render_text_bitmap(renderer, buffer, 100, 190, COLOR_WHITE, false);
-            sprintf(buffer, "Misses: %d", results.misses); render_text_bitmap(renderer, buffer, 100, 220, COLOR_WHITE, false);
-            sprintf(buffer, "Highest Combo: %d", results.highest_combo); render_text_bitmap(renderer, buffer, 100, 280, COLOR_WHITE, false);
-            sprintf(buffer, "Score: %d", results.score); render_text_bitmap(renderer, buffer, 100, 310, COLOR_WHITE, false);
+            render_text_bitmap(renderer, "Resultados", SCREEN_WIDTH/2, 30, COLOR_WHITE, true); 
+            char buffer[128];
+            int y = 100;
+            
+            sprintf(buffer, "Sicks: %d", results.sicks); 
+            render_text_bitmap(renderer, buffer, 100, y, COLOR_WHITE, false); y += 30;
+            
+            sprintf(buffer, "Goods: %d", results.goods); 
+            render_text_bitmap(renderer, buffer, 100, y, COLOR_WHITE, false); y += 30;
+            
+            sprintf(buffer, "Bads: %d", results.bads); 
+            render_text_bitmap(renderer, buffer, 100, y, COLOR_WHITE, false); y += 30;
+            
+            sprintf(buffer, "Shits: %d", results.shits); 
+            render_text_bitmap(renderer, buffer, 100, y, COLOR_WHITE, false); y += 30;
+            
+            sprintf(buffer, "Misses: %d", results.misses); 
+            render_text_bitmap(renderer, buffer, 100, y, COLOR_WHITE, false); y += 30;
+
+            sprintf(buffer, "Total Notes: %d", results.player_note_count); 
+            render_text_bitmap(renderer, buffer, 100, y, COLOR_WHITE, false); y += 40;
+            
+            sprintf(buffer, "Highest Combo: %d", results.highest_combo); 
+            render_text_bitmap(renderer, buffer, 100, y, COLOR_WHITE, false); y += 30;
+            
+            sprintf(buffer, "Score: %d", results.score); 
+            render_text_bitmap(renderer, buffer, 100, y, COLOR_WHITE, false);
+            
             render_text_bitmap(renderer, "Pressione Voltar/A/Enter para continuar", SCREEN_WIDTH/2, 420, COLOR_WHITE, true);
         }
         SDL_RenderPresent(renderer); SDL_Delay(1000 / FPS);
