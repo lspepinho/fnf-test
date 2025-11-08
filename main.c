@@ -263,7 +263,157 @@ void render_text_bitmap(SDL_Renderer* renderer, const char* text, int x, int y, 
 static int jsoneq(const char *json, jsmntok_t *tok, const char *s) { return (tok->type == JSMN_STRING && (int)strlen(s) == tok->end - tok->start && strncmp(json + tok->start, s, tok->end - tok->start) == 0); }
 int compareNotes(const void* a, const void* b) { ChartNote* nA = (ChartNote*)a; ChartNote* nB = (ChartNote*)b; if (nA->timestamp < nB->timestamp) return -1; if (nA->timestamp > nB->timestamp) return 1; return 0; }
 int skip_token(jsmntok_t *t, int i) { int n = i + 1; if (t[i].type == JSMN_OBJECT || t[i].type == JSMN_ARRAY) { for (int j = 0; j < t[i].size; j++) { if (t[i].type == JSMN_OBJECT) n = skip_token(t, n); n = skip_token(t, n); } } return n; }
-ChartNote* load_chart(const char* path, int* note_count, double* noteSpeed) { FILE* f = fopen(path, "rb"); if (!f) { log_message(LOG_LEVEL_ERROR, "Não foi possível abrir o arquivo do chart: %s", path); return NULL; } fseek(f, 0, SEEK_END); long l = ftell(f); fseek(f, 0, SEEK_SET); char* js = malloc(l + 1); if (!js) { fclose(f); log_message(LOG_LEVEL_ERROR, "Falha ao alocar memória para o string JSON."); return NULL; } fread(js, 1, l, f); fclose(f); js[l] = '\0'; jsmn_parser p; jsmntok_t *t = NULL; ChartNote* nb = NULL; jsmn_init(&p); int r = jsmn_parse(&p, js, l, NULL, 0); if (r < 0) { log_message(LOG_LEVEL_ERROR, "Falha ao analisar JSON (passagem 1, código %d) em %s.", r, path); free(js); return NULL; } t = malloc(sizeof(jsmntok_t) * r); if (!t) { log_message(LOG_LEVEL_ERROR, "Falha ao alocar memória para tokens JSMN."); free(js); return NULL; } jsmn_init(&p); r = jsmn_parse(&p, js, l, t, r); if (r < 0) { log_message(LOG_LEVEL_ERROR, "Erro na segunda passagem do parser JSMN (código %d).", r); goto cleanup; } nb = malloc(sizeof(ChartNote) * 65536); if (!nb) { goto cleanup; } *note_count = 0; int n_arr_tok = -1; for (int i = 1; i < r; i++) { if (jsoneq(js, &t[i], "notes") && t[i+1].type == JSMN_ARRAY) { n_arr_tok = i + 1; break; } } if (n_arr_tok == -1) { log_message(LOG_LEVEL_WARN, "Array 'notes' não foi encontrado em %s.", path); goto cleanup; } for(int i=1; i<r; i++) { if(jsoneq(js, &t[i], "speed")) { char speed_str[16]; snprintf(speed_str, t[i+1].end-t[i+1].start+1, "%s", js+t[i+1].start); *noteSpeed = atof(speed_str); break; } } int tok_idx = n_arr_tok + 1; for (int i = 0; i < t[n_arr_tok].size; i++) { jsmntok_t *sec_obj = &t[tok_idx], *notes_tok = NULL; int inner_idx = tok_idx + 1; for (int j = 0; j < sec_obj->size; j++) { jsmntok_t *key = &t[inner_idx]; if (jsoneq(js, key, "sectionNotes")) { notes_tok = &t[inner_idx + 1]; } inner_idx = skip_token(t, inner_idx + 1); } if (notes_tok && notes_tok->type == JSMN_ARRAY) { int note_ptr = tok_idx + 1; while(&t[note_ptr] != notes_tok) note_ptr++; note_ptr++; for (int k = 0; k < notes_tok->size; k++) { jsmntok_t* note_arr = &t[note_ptr]; char ts_s[32], ty_s[16], sus_s[32] = "0"; snprintf(ts_s, t[note_ptr+1].end - t[note_ptr+1].start + 1, "%s", js + t[note_ptr+1].start); snprintf(ty_s, t[note_ptr+2].end - t[note_ptr+2].start + 1, "%s", js + t[note_ptr+2].start); if (note_arr->size > 2) { snprintf(sus_s, t[note_ptr+3].end - t[note_ptr+3].start + 1, "%s", js + t[note_ptr+3].start); } int nt = atoi(ty_s); nb[*note_count].timestamp = atof(ts_s); nb[*note_count].type = nt; nb[*note_count].sustainLength = atof(sus_s); nb[*note_count].isPlayer1 = (nt < 4); nb[*note_count].wasHit = false; nb[*note_count].canBeHit = (nt < 4); (*note_count)++; note_ptr = skip_token(t, note_ptr); } } tok_idx = skip_token(t, tok_idx); } qsort(nb, *note_count, sizeof(ChartNote), compareNotes); free(js); free(t); log_message(LOG_LEVEL_INFO, "Chart '%s' carregado com sucesso. %d notas encontradas.", path, *note_count); return nb; cleanup: free(js); if(t) free(t); if(nb) free(nb); log_message(LOG_LEVEL_ERROR, "Falha ao processar a estrutura do chart '%s'.", path); return NULL; }
+ChartNote* load_chart(const char* path, int* note_count, double* noteSpeed) {
+    FILE* f = fopen(path, "rb");
+    if (!f) {
+        log_message(LOG_LEVEL_ERROR, "Não foi possível abrir o arquivo do chart: %s", path);
+        return NULL;
+    }
+    fseek(f, 0, SEEK_END);
+    long l = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char* js = malloc(l + 1);
+    if (!js) {
+        fclose(f);
+        log_message(LOG_LEVEL_ERROR, "Falha ao alocar memória para o string JSON.");
+        return NULL;
+    }
+    fread(js, 1, l, f);
+    fclose(f);
+    js[l] = '\0';
+
+    jsmn_parser p;
+    jsmntok_t *t = NULL;
+    ChartNote* nb = NULL;
+    jsmn_init(&p);
+    int r = jsmn_parse(&p, js, l, NULL, 0);
+    if (r < 0) {
+        log_message(LOG_LEVEL_ERROR, "Falha ao analisar JSON (passagem 1, código %d) em %s.", r, path);
+        free(js);
+        return NULL;
+    }
+    t = malloc(sizeof(jsmntok_t) * r);
+    if (!t) {
+        log_message(LOG_LEVEL_ERROR, "Falha ao alocar memória para tokens JSMN.");
+        free(js);
+        return NULL;
+    }
+    jsmn_init(&p);
+    r = jsmn_parse(&p, js, l, t, r);
+    if (r < 0) {
+        log_message(LOG_LEVEL_ERROR, "Erro na segunda passagem do parser JSMN (código %d).", r);
+        goto cleanup;
+    }
+    nb = malloc(sizeof(ChartNote) * 65536);
+    if (!nb) {
+        goto cleanup;
+    }
+    *note_count = 0;
+
+    int n_arr_tok = -1;
+    // --- MUDANÇA: Procura pela primeira ocorrência de "notes" dentro de "song" ---
+    for (int i = 1; i < r; i++) {
+        if (jsoneq(js, &t[i], "song") && t[i+1].type == JSMN_OBJECT) {
+            int song_obj_end = skip_token(t, i + 1);
+            for (int j = i + 2; j < song_obj_end; j++) {
+                if (jsoneq(js, &t[j], "notes") && t[j+1].type == JSMN_ARRAY) {
+                    n_arr_tok = j + 1;
+                    break;
+                }
+            }
+            if (n_arr_tok != -1) break;
+        }
+    }
+
+    if (n_arr_tok == -1) {
+        log_message(LOG_LEVEL_WARN, "Array 'notes' não foi encontrado em %s.", path);
+        goto cleanup;
+    }
+    for(int i=1; i<r; i++) {
+        if(jsoneq(js, &t[i], "speed")) {
+            char speed_str[16];
+            snprintf(speed_str, t[i+1].end-t[i+1].start+1, "%s", js+t[i+1].start);
+            *noteSpeed = atof(speed_str);
+            break;
+        }
+    }
+
+    int tok_idx = n_arr_tok + 1;
+    for (int i = 0; i < t[n_arr_tok].size; i++) {
+        jsmntok_t *sec_obj = &t[tok_idx];
+        jsmntok_t *notes_tok = NULL;
+        bool section_is_player = false; 
+
+        int inner_idx = tok_idx + 1;
+        for (int j = 0; j < sec_obj->size; j++) {
+            jsmntok_t *key = &t[inner_idx];
+            if (jsoneq(js, key, "sectionNotes")) {
+                notes_tok = &t[inner_idx + 1];
+            }
+            if (jsoneq(js, key, "mustHitSection")) {
+                jsmntok_t* val_tok = &t[inner_idx + 1];
+                if (val_tok->type == JSMN_PRIMITIVE && js[val_tok->start] == 't') {
+                    section_is_player = true;
+                }
+            }
+            inner_idx = skip_token(t, inner_idx + 1);
+        }
+
+        if (notes_tok && notes_tok->type == JSMN_ARRAY) {
+            int note_ptr = tok_idx + 1;
+            while(&t[note_ptr] != notes_tok) note_ptr++;
+            note_ptr++;
+            
+            for (int k = 0; k < notes_tok->size; k++) {
+                jsmntok_t* note_arr = &t[note_ptr];
+                char ts_s[32], ty_s[16], sus_s[32] = "0";
+                
+                snprintf(ts_s, t[note_ptr+1].end - t[note_ptr+1].start + 1, "%s", js + t[note_ptr+1].start);
+                snprintf(ty_s, t[note_ptr+2].end - t[note_ptr+2].start + 1, "%s", js + t[note_ptr+2].start);
+                if (note_arr->size > 2) {
+                    snprintf(sus_s, t[note_ptr+3].end - t[note_ptr+3].start + 1, "%s", js + t[note_ptr+3].start);
+                }
+                
+                int nt = atoi(ty_s);
+                
+                // --- MUDANÇA UNIVERSAL ---
+                // Agora, a lógica é mais simples e robusta.
+                // A nota pertence ao jogador (isPlayer1) SE E SOMENTE SE:
+                // A seção for do jogador (mustHitSection: true)
+                bool is_player1_note = section_is_player;
+
+                // Para charts que trocam de lado, o tipo de nota do oponente (4-7)
+                // deve ser mapeado para as lanes do jogador (0-3).
+                // Em charts normais, as notas do oponente (0-3) serão apenas ignoradas.
+                int note_type_for_lane = nt % 4;
+
+                nb[*note_count].timestamp = atof(ts_s);
+                nb[*note_count].type = note_type_for_lane;
+                nb[*note_count].sustainLength = atof(sus_s);
+                nb[*note_count].isPlayer1 = is_player1_note;
+                nb[*note_count].wasHit = false;
+                nb[*note_count].canBeHit = is_player1_note;
+                (*note_count)++;
+                
+                note_ptr = skip_token(t, note_ptr);
+            }
+        }
+        tok_idx = skip_token(t, tok_idx);
+    }
+    
+    qsort(nb, *note_count, sizeof(ChartNote), compareNotes);
+    free(js);
+    free(t);
+    log_message(LOG_LEVEL_INFO, "Chart '%s' carregado com sucesso. %d notas encontradas.", path, *note_count);
+    return nb;
+
+cleanup:
+    free(js);
+    if(t) free(t);
+    if(nb) free(nb);
+    log_message(LOG_LEVEL_ERROR, "Falha ao processar a estrutura do chart '%s'.", path);
+    return NULL;
+}
 bool file_exists(const char *filename) { FILE *file = fopen(filename, "r"); if (file) { fclose(file); return true; } return false; }
 #pragma endregion
 
