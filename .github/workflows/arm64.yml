@@ -8,7 +8,7 @@ on:
 jobs:
   build-native-arm64:
     # Usando o runner nativo ARM do GitHub, que é baseado no Ubuntu 22.04
-    runs-on: ubuntu-latest-arm64
+    runs-on: ubuntu-22.04-arm
     
     steps:
     # 1. Baixa o código do seu repositório
