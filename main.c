@@ -311,7 +311,6 @@ ChartNote* load_chart(const char* path, int* note_count, double* noteSpeed) {
     *note_count = 0;
 
     int n_arr_tok = -1;
-    // Tenta encontrar "notes" dentro de "song" (formato moderno)
     for (int i = 1; i < r; i++) {
         if (jsoneq(js, &t[i], "song") && t[i+1].type == JSMN_OBJECT) {
             int song_obj_end = skip_token(t, i + 1);
@@ -325,7 +324,6 @@ ChartNote* load_chart(const char* path, int* note_count, double* noteSpeed) {
         }
     }
 
-    // Se não encontrou, tenta encontrar "notes" no nível principal (formato antigo/erect)
     if (n_arr_tok == -1) {
         for (int i = 1; i < r; i++) {
             if (jsoneq(js, &t[i], "notes") && t[i+1].type == JSMN_ARRAY) {
@@ -393,24 +391,29 @@ ChartNote* load_chart(const char* path, int* note_count, double* noteSpeed) {
                 
                 int raw_note_type = atoi(ty_s);
                 
-                bool is_player_note;
+                // --- MUDANÇA: LÓGICA HÍBRIDA FINAL ---
+                
+                // 1. O lado visual da nota (isPlayer1) é sempre definido pelo seu tipo bruto.
+                //    < 4 é o lado do player1 (BF, direita), >= 4 é o lado do player2 (Oponente, esquerda).
+                bool is_on_p1_side = (raw_note_type < 4);
+
+                // 2. A nota é "hittable" (canBeHit) se o lado que o jogador deve acertar
+                //    (definido por mustHitSection) corresponde ao lado da nota.
+                bool is_hittable;
                 if (section_must_hit) {
-                    is_player_note = (raw_note_type < 4);
+                    // O jogador deve acertar o lado P1. A nota é hittable se ela for do lado P1.
+                    is_hittable = is_on_p1_side;
                 } else {
-                    is_player_note = (raw_note_type >= 4);
+                    // O jogador deve acertar o lado P2. A nota é hittable se ela for do lado P2.
+                    is_hittable = !is_on_p1_side;
                 }
-                
-                if (!is_player_note) {
-                    note_ptr = skip_token(t, note_ptr);
-                    continue;
-                }
-                
+
                 nb[*note_count].timestamp = atof(ts_s);
                 nb[*note_count].type = raw_note_type % 4;
                 nb[*note_count].sustainLength = atof(sus_s);
-                nb[*note_count].isPlayer1 = true;
+                nb[*note_count].isPlayer1 = is_on_p1_side; // Define a posição visual
                 nb[*note_count].wasHit = false;
-                nb[*note_count].canBeHit = true;
+                nb[*note_count].canBeHit = is_hittable; // Define se o jogador pode acertá-la
                 (*note_count)++;
                 
                 note_ptr = skip_token(t, note_ptr);
@@ -438,10 +441,53 @@ bool file_exists(const char *filename) { FILE *file = fopen(filename, "r"); if (
 // --- Lógica do Jogo ---
 #pragma region "Lógica do Jogo"
 NoteNode* handle_note_hit(int lane, NoteNode* active_notes, GameState* state, Uint32 song_time, bool ghostTapping) {
-    NoteNode* best_note = NULL; double min_diff = TIME_WINDOW_MISS + 1.0;
-    for (NoteNode* curr = active_notes; curr != NULL; curr = curr->next) { if (curr->data.canBeHit && !curr->data.wasHit && (curr->data.type % 4 == lane)) { double diff = fabs(curr->data.timestamp - song_time); if (diff < min_diff) { min_diff = diff; best_note = curr; } } }
-    if (best_note) { best_note->data.wasHit = true; if (min_diff <= TIME_WINDOW_SICK) { state->score += SCORE_SICK; state->combo++; state->sicks++; strcpy(state->rating, "SICK!"); } else if (min_diff <= TIME_WINDOW_GOOD) { state->score += SCORE_GOOD; state->combo++; state->goods++; strcpy(state->rating, "GOOD"); } else if (min_diff <= TIME_WINDOW_BAD) { state->score += SCORE_BAD; state->combo = 0; state->bads++; strcpy(state->rating, "BAD"); } else { state->score += SCORE_MISS; state->combo = 0; state->shits++; strcpy(state->rating, "SHIT"); } state->ratingTime = SDL_GetTicks(); if(state->combo > state->highest_combo) state->highest_combo = state->combo; return best_note; }
-    else if (!ghostTapping) { state->combo = 0; state->misses++; }
+    NoteNode* best_note = NULL;
+    double min_diff = TIME_WINDOW_MISS + 1.0;
+    
+    // Flag para detectar se uma nota do oponente está na janela de tempo
+    bool opponent_note_in_window = false;
+
+    for (NoteNode* curr = active_notes; curr != NULL; curr = curr->next) {
+        // Verifica se a nota está na lane correta e ainda não foi acertada
+        if (!curr->data.wasHit && (curr->data.type % 4 == lane)) {
+            double diff = fabs(curr->data.timestamp - song_time);
+
+            // Se for uma nota do JOGADOR (canBeHit == true) e estiver na janela de tempo, a consideramos
+            if (curr->data.canBeHit && diff < min_diff) {
+                min_diff = diff;
+                best_note = curr;
+            } 
+            // Se for uma nota do OPONENTE (canBeHit == false) na janela de tempo, apenas registramos sua presença
+            else if (!curr->data.canBeHit && diff <= TIME_WINDOW_MISS) {
+                opponent_note_in_window = true;
+            }
+        }
+    }
+
+    // Se encontramos uma nota do jogador para acertar, processamos o acerto normalmente.
+    if (best_note) {
+        best_note->data.wasHit = true;
+        if (min_diff <= TIME_WINDOW_SICK) {
+            state->score += SCORE_SICK; state->combo++; state->sicks++; strcpy(state->rating, "SICK!");
+        } else if (min_diff <= TIME_WINDOW_GOOD) {
+            state->score += SCORE_GOOD; state->combo++; state->goods++; strcpy(state->rating, "GOOD");
+        } else if (min_diff <= TIME_WINDOW_BAD) {
+            state->score += SCORE_BAD; state->combo = 0; state->bads++; strcpy(state->rating, "BAD");
+        } else {
+            state->score += SCORE_MISS; state->combo = 0; state->shits++; strcpy(state->rating, "SHIT");
+        }
+        state->ratingTime = SDL_GetTicks();
+        if(state->combo > state->highest_combo) state->highest_combo = state->combo;
+        return best_note;
+    } 
+    // Se não encontramos nota do jogador, SÓ aplicamos a penalidade de miss se NÃO houver uma nota do oponente no caminho.
+    else if (!ghostTapping && !opponent_note_in_window) {
+        state->combo = 0;
+        state->misses++;
+    }
+    
+    // Se chegamos aqui, ou o ghost tapping está ligado, ou havia uma nota do oponente, ou acertamos uma nota.
+    // Em todos esses casos onde não há penalidade, não retornamos nada.
     return NULL;
 }
 void draw_receptors(SDL_Renderer* renderer, const bool keys_down[], GameOptions* options) { int receptor_y = (options->scrollDir == SCROLL_DOWN) ? SCREEN_HEIGHT - 50 : 50; const int* p1_pos = options->isMiddleScroll ? P1_POS_X_MIDDLE : P1_POS_X_CLASSIC; const int* p2_pos = options->isMiddleScroll ? P2_POS_X_MIDDLE : P2_POS_X_CLASSIC; for (int i = 0; i < 4; i++) { SDL_Rect r_p1 = {p1_pos[i], receptor_y, NOTE_SIZE, NOTE_SIZE}; if (keys_down[i]) { SDL_SetRenderDrawColor(renderer, PLAYER_COLORS[i].r, PLAYER_COLORS[i].g, PLAYER_COLORS[i].b, 255); SDL_RenderFillRect(renderer, &r_p1); } else { SDL_SetRenderDrawColor(renderer, 100, 100, 100, 255); SDL_RenderFillRect(renderer, &r_p1); } SDL_Rect r_p2 = {p2_pos[i], receptor_y, NOTE_SIZE, NOTE_SIZE}; SDL_SetRenderDrawColor(renderer, PLAYER_COLORS[i].r, PLAYER_COLORS[i].g, PLAYER_COLORS[i].b, 100); SDL_RenderDrawRect(renderer, &r_p2); } }
