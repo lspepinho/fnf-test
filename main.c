@@ -371,7 +371,6 @@ int main(int argc, char* argv[]) {
     create_font_texture(renderer);
 
     GameScreen currentScreen = STATE_SONG_SELECT;
-    // --- MUDANÇA: Inicializa os mapeamentos de controle padrão (DPAD) ---
     GameOptions options = {
         SCROLL_DOWN, false, true, 1.0, 
         {SDLK_LEFT, SDLK_DOWN, SDLK_UP, SDLK_RIGHT}, 
@@ -383,7 +382,7 @@ int main(int argc, char* argv[]) {
     char* difficulties[16]; int diff_count = 0;
     int sel_song_idx = 0; int sel_diff_idx = 0; int sel_option_idx = 0;
     int keybind_to_change = -1;
-    int controller_bind_to_change = -1; // Novo estado para esperar input do controle
+    int controller_bind_to_change = -1;
     
     struct dirent *entry;
 
@@ -395,8 +394,11 @@ int main(int argc, char* argv[]) {
     int sel_diff_scroll_offset = 0;
     
     bool running = true;
-    bool is_start_down = false;
-    bool is_select_down = false;
+    // --- MUDANÇA: Novas variáveis para rastrear a combinação de 4 botões ---
+    bool is_x_down = false;
+    bool is_y_down = false;
+    bool is_dpleft_down = false;
+    bool is_dpup_down = false;
 
     while (running) {
         SDL_Event e;
@@ -405,32 +407,33 @@ int main(int argc, char* argv[]) {
         while (SDL_PollEvent(&e) != 0) {
             if (e.type == SDL_QUIT) { running = false; }
             if (keybind_to_change != -1) { if (e.type == SDL_KEYDOWN) { if (keybind_to_change < 4) options.keybinds_main[keybind_to_change] = e.key.keysym.sym; else options.keybinds_alt[keybind_to_change - 4] = e.key.keysym.sym; keybind_to_change = -1; } continue; }
-            
-            // --- MUDANÇA: Captura input para mapear o controle ---
             if (controller_bind_to_change != -1) {
                 if (e.type == SDL_CONTROLLERBUTTONDOWN) {
                     options.controller_binds[controller_bind_to_change] = e.cbutton.button;
                     controller_bind_to_change = -1;
                 }
-                continue; // Ignora outros inputs enquanto espera o mapeamento
+                continue;
             }
 
             if (e.type == SDL_KEYDOWN) { 
                 switch (e.key.keysym.sym) { 
-                    case SDLK_UP: nav_up=1; break; 
-                    case SDLK_DOWN: nav_down=1; break; 
-                    case SDLK_LEFT: nav_left=1; break; 
-                    case SDLK_RIGHT: nav_right=1; break; 
+                    case SDLK_UP: nav_up=1; break; case SDLK_DOWN: nav_down=1; break; 
+                    case SDLK_LEFT: nav_left=1; break; case SDLK_RIGHT: nav_right=1; break; 
                     case SDLK_RETURN: case SDLK_SPACE: nav_accept=1; break; 
                     case SDLK_ESCAPE: nav_back=1; break; 
                 } 
             }
             if (e.type == SDL_CONTROLLERBUTTONDOWN || e.type == SDL_CONTROLLERBUTTONUP) {
                 bool is_down = (e.type == SDL_CONTROLLERBUTTONDOWN);
-                if (e.cbutton.button == SDL_CONTROLLER_BUTTON_START) is_start_down = is_down;
-                if (e.cbutton.button == SDL_CONTROLLER_BUTTON_BACK) is_select_down = is_down;
+
+                // --- MUDANÇA: Rastreia o estado dos 4 botões da combinação ---
+                if (e.cbutton.button == SDL_CONTROLLER_BUTTON_X) is_x_down = is_down;
+                if (e.cbutton.button == SDL_CONTROLLER_BUTTON_Y) is_y_down = is_down;
+                if (e.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_LEFT) is_dpleft_down = is_down;
+                if (e.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_UP) is_dpup_down = is_down;
                 
                 if(is_down) {
+                    // Navegação normal (DPAD já é tratado pelo nav_up/down/left/right)
                     switch (e.cbutton.button) { 
                         case SDL_CONTROLLER_BUTTON_DPAD_UP: nav_up=1; break; 
                         case SDL_CONTROLLER_BUTTON_DPAD_DOWN: nav_down=1; break; 
@@ -447,15 +450,24 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        if (is_start_down && is_select_down) {
-            if (currentScreen == STATE_SONG_SELECT) { running = false; } 
+        // --- MUDANÇA: Lógica para a nova combinação X+Y+DPLeft+DPUp ---
+        if (is_x_down && is_y_down && is_dpleft_down && is_dpup_down) {
+            if (currentScreen == STATE_SONG_SELECT) {
+                log_message(LOG_LEVEL_INFO, "Combinação de saída pressionada. Saindo...");
+                running = false; // Sai do programa
+            } 
             else if (currentScreen == STATE_RESULTS) {
-                currentScreen = STATE_SONG_SELECT;
-                is_start_down = false; is_select_down = false;
+                log_message(LOG_LEVEL_INFO, "Combinação de saída pressionada. Voltando ao menu...");
+                currentScreen = STATE_SONG_SELECT; // Volta para a lista de músicas
             }
-            nav_accept = false; nav_back = false;
+            // Reseta os botões para a ação não se repetir no próximo frame
+            is_x_down = is_y_down = is_dpleft_down = is_dpup_down = false;
+            // Consome os flags de navegação para evitar ação dupla
+            nav_accept = false;
+            nav_back = false;
         }
 
+        // Lógica da máquina de estados (sem alterações)
         if (currentScreen == STATE_SONG_SELECT) {
             if (song_count > 0) {
                 if (nav_up) sel_song_idx = (sel_song_idx - 1 + song_count) % song_count;
@@ -514,6 +526,7 @@ int main(int argc, char* argv[]) {
             if(nav_accept || nav_back) { currentScreen = STATE_SONG_SELECT; } 
         }
 
+        // Lógica de renderização (sem alterações)
         SDL_SetRenderDrawColor(renderer, 20, 20, 20, 255); SDL_RenderClear(renderer);
         if (currentScreen == STATE_SONG_SELECT) {
             render_text_bitmap(renderer, "Selecione a Musica", SCREEN_WIDTH/2, 30, COLOR_WHITE, true);
@@ -559,7 +572,7 @@ int main(int argc, char* argv[]) {
                 const char* button_name = (controller_bind_to_change == i) 
                     ? "Pressione um botao..." 
                     : SDL_GameControllerGetStringForButton(options.controller_binds[i]);
-                sprintf(buffer, "%s: <%s>", directions[i], button_name);
+                sprintf(buffer, "%s: <%s>", directions[i], button_name ? button_name : "N/A");
                 render_text_bitmap(renderer, buffer, SCREEN_WIDTH/2, y, (sel_option_idx == i ? COLOR_SELECTED : COLOR_WHITE), true);
                 y += 40;
             }
