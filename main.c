@@ -311,6 +311,7 @@ ChartNote* load_chart(const char* path, int* note_count, double* noteSpeed) {
     *note_count = 0;
 
     int n_arr_tok = -1;
+    // Tenta encontrar "notes" dentro de "song" (formato moderno)
     for (int i = 1; i < r; i++) {
         if (jsoneq(js, &t[i], "song") && t[i+1].type == JSMN_OBJECT) {
             int song_obj_end = skip_token(t, i + 1);
@@ -324,6 +325,7 @@ ChartNote* load_chart(const char* path, int* note_count, double* noteSpeed) {
         }
     }
 
+    // Se não encontrou, tenta encontrar "notes" no nível principal (formato antigo/erect)
     if (n_arr_tok == -1) {
         for (int i = 1; i < r; i++) {
             if (jsoneq(js, &t[i], "notes") && t[i+1].type == JSMN_ARRAY) {
@@ -385,23 +387,18 @@ ChartNote* load_chart(const char* path, int* note_count, double* noteSpeed) {
                 snprintf(ts_s, t[note_ptr+1].end - t[note_ptr+1].start + 1, "%s", js + t[note_ptr+1].start);
                 snprintf(ty_s, t[note_ptr+2].end - t[note_ptr+2].start + 1, "%s", js + t[note_ptr+2].start);
                 
-                // --- MUDANÇA: Lógica de sustain robusta ---
-                // Só lê o terceiro valor se ele existir E for um número.
+                // --- MUDANÇA: Lógica de sustain robusta para lidar com o formato do Psych Engine ---
                 if (note_arr->size > 2 && t[note_ptr+3].type == JSMN_PRIMITIVE) {
                     snprintf(sus_s, t[note_ptr+3].end - t[note_ptr+3].start + 1, "%s", js + t[note_ptr+3].start);
                 }
                 
                 int raw_note_type = atoi(ty_s);
                 
-                bool is_player_note;
-                if (section_must_hit) {
-                    is_player_note = (raw_note_type < 4);
-                } else {
-                    is_player_note = (raw_note_type >= 4);
-                }
+                // --- LÓGICA UNIVERSAL DE ATRIBUIÇÃO DE NOTA ---
+                bool is_player_note = section_must_hit;
                 
                 nb[*note_count].timestamp = atof(ts_s);
-                nb[*note_count].type = raw_note_type % 4;
+                nb[*note_count].type = raw_note_type % 4; // Sempre mapeia para as 4 lanes
                 nb[*note_count].sustainLength = atof(sus_s);
                 nb[*note_count].isPlayer1 = is_player_note;
                 nb[*note_count].wasHit = false;
