@@ -1,4 +1,4 @@
-name: Build Nativo para ARM64 (Ubuntu 22.04)
+name: Build Nativo para Ubuntu 19.10 (arm64)
 
 on:
   push:
@@ -7,28 +7,46 @@ on:
 
 jobs:
   build-native-arm64:
-    # Usando o runner nativo ARM do GitHub, que é baseado no Ubuntu 22.04
-    runs-on: ubuntu-22.04-arm
+    # CORREÇÃO: Usando um runner ARM específico. A sintaxe correta é especificar a arquitetura.
+    # Isto selecionará uma máquina virtual ARM64 baseada no Ubuntu 22.04.
+    runs-on: "ubuntu-22.04-arm64" # Label exato para runners ARM64 no plano gratuito
     
     steps:
-    # 1. Baixa o código do seu repositório
+    # 1. Baixa o código do seu repositório para o runner
     - name: Checkout code
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
-    # 2. Instala as dependências de compilação
-    - name: Install build dependencies
+    # 2. Compila o jogo DENTRO de um container Docker do Ubuntu 19.10
+    - name: Build inside Ubuntu 19.10 Docker container
       run: |
-        sudo apt-get update
-        sudo apt-get install -y build-essential libsdl2-dev libsdl2-mixer-dev
+        # Inicia um container Docker do Ubuntu 19.10 (a versão arm64 será usada automaticamente)
+        # O código do seu repositório é mapeado para a pasta /work dentro do container
+        docker run --rm -v "$PWD":/work -w /work \
+        ubuntu:19.10 \
+        /bin/bash -c " \
+          echo '--- Preparando ambiente do container Ubuntu 19.10 ---' && \
+          
+          # CORREÇÃO CRÍTICA: Aponta o apt para os repositórios de versões antigas,
+          # senão o 'apt-get update' vai falhar pois o 19.10 não tem mais suporte.
+          sed -i 's/archive.ubuntu.com/old-releases.ubuntu.com/g' /etc/apt/sources.list && \
+          sed -i 's/security.ubuntu.com/old-releases.ubuntu.com/g' /etc/apt/sources.list && \
+          
+          echo '--- Instalando dependências ---' && \
+          apt-get update && \
+          DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            build-essential \
+            libsdl2-dev \
+            libsdl2-mixer-dev && \
+          
+          echo '--- Compilando o jogo ---' && \
+          # Compila o 'main.c' para o executável 'renderer'.
+          # Não usamos -static pois o ambiente é idêntico ao de destino, garantindo compatibilidade.
+          gcc main.c -o renderer -lSDL2 -lSDL2_mixer -lm && \
+          
+          echo '--- Compilação finalizada com sucesso! ---' \
+        "
 
-    # 3. Compila o jogo com linkagem estática para máxima portabilidade
-    - name: Compile the game
-      run: |
-        # A flag -static é CRUCIAL para tentar rodar em um sistema mais antigo.
-        # Ela incluirá as bibliotecas SDL e a glibc dentro do executável.
-        gcc main.c -o renderer -lSDL2 -lSDL2_mixer -lm
-
-    # 4. Sobe o executável compilado como um artefato
+    # 3. Sobe o executável 'renderer' como um artefato
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
