@@ -311,6 +311,7 @@ ChartNote* load_chart(const char* path, int* note_count, double* noteSpeed) {
     *note_count = 0;
 
     int n_arr_tok = -1;
+    // Tenta encontrar "notes" dentro de "song" (formato moderno)
     for (int i = 1; i < r; i++) {
         if (jsoneq(js, &t[i], "song") && t[i+1].type == JSMN_OBJECT) {
             int song_obj_end = skip_token(t, i + 1);
@@ -324,6 +325,7 @@ ChartNote* load_chart(const char* path, int* note_count, double* noteSpeed) {
         }
     }
 
+    // Se não encontrou, tenta encontrar "notes" no nível principal (formato antigo/erect)
     if (n_arr_tok == -1) {
         for (int i = 1; i < r; i++) {
             if (jsoneq(js, &t[i], "notes") && t[i+1].type == JSMN_ARRAY) {
@@ -391,25 +393,24 @@ ChartNote* load_chart(const char* path, int* note_count, double* noteSpeed) {
                 
                 int raw_note_type = atoi(ty_s);
                 
-                // --- LÓGICA HÍBRIDA E UNIVERSAL ---
                 bool is_player_note;
-                // A seção é do jogador?
                 if (section_must_hit) {
-                    // Sim. Então as notas do jogador são as da esquerda (< 4)
                     is_player_note = (raw_note_type < 4);
                 } else {
-                    // Não. As notas do jogador são as da direita (>= 4), assumindo o papel do oponente.
-                    // Isso funciona para Starman Slaughter e também para Blazin', onde não haverá notas >= 4,
-                    // então is_player_note será corretamente 'false'.
                     is_player_note = (raw_note_type >= 4);
+                }
+                
+                if (!is_player_note) {
+                    note_ptr = skip_token(t, note_ptr);
+                    continue;
                 }
                 
                 nb[*note_count].timestamp = atof(ts_s);
                 nb[*note_count].type = raw_note_type % 4;
                 nb[*note_count].sustainLength = atof(sus_s);
-                nb[*note_count].isPlayer1 = is_player_note;
+                nb[*note_count].isPlayer1 = true;
                 nb[*note_count].wasHit = false;
-                nb[*note_count].canBeHit = is_player_note;
+                nb[*note_count].canBeHit = true;
                 (*note_count)++;
                 
                 note_ptr = skip_token(t, note_ptr);
