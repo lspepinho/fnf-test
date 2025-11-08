@@ -284,12 +284,18 @@ GameState run_game(SDL_Renderer* renderer, GameOptions* options, const char* cha
     NoteNode* player_holding_note[4] = {NULL, NULL, NULL, NULL};
     if (music) Mix_PlayMusic(music, 1); if (p_v) Mix_PlayChannel(1, p_v, 0); if (o_v) Mix_PlayChannel(2, o_v, 0);
     Uint32 start_time = SDL_GetTicks(); bool game_running = true;
+
+    // --- MUDANÇA: Variáveis da hotkey agora existem dentro do run_game ---
+    bool is_x_down = false;
+    bool is_y_down = false;
+    bool is_dpleft_down = false;
+    bool is_dpup_down = false;
+
     while (game_running) {
         Uint32 song_time = SDL_GetTicks() - start_time;
         SDL_Event e;
         while (SDL_PollEvent(&e) != 0) {
             if (e.type == SDL_QUIT || (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE)) { game_running = false; }
-            
             int lane = -1;
             if (e.type == SDL_KEYDOWN || e.type == SDL_KEYUP) {
                 bool is_down = (e.type == SDL_KEYDOWN);
@@ -303,26 +309,24 @@ GameState run_game(SDL_Renderer* renderer, GameOptions* options, const char* cha
             if (e.type == SDL_CONTROLLERBUTTONDOWN || e.type == SDL_CONTROLLERBUTTONUP) {
                 bool is_down = (e.type == SDL_CONTROLLERBUTTONDOWN);
 
+                // --- MUDANÇA: Rastreia a hotkey aqui também ---
+                if (e.cbutton.button == SDL_CONTROLLER_BUTTON_X) is_x_down = is_down;
+                if (e.cbutton.button == SDL_CONTROLLER_BUTTON_Y) is_y_down = is_down;
+                if (e.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_LEFT) is_dpleft_down = is_down;
+                if (e.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_UP) is_dpup_down = is_down;
+
                 if (is_down && e.cbutton.button == SDL_CONTROLLER_BUTTON_START) {
                     game_running = false;
                     break;
                 }
-
-                // --- MUDANÇA: USA OS MAPEAMENTOS PERSONALIZADOS DO CONTROLE ---
-                for (int i = 0; i < 4; i++) {
-                    if (e.cbutton.button == options->controller_binds[i]) {
-                        lane = i;
-                        break;
-                    }
-                }
-                
+                for (int i = 0; i < 4; i++) { if (e.cbutton.button == options->controller_binds[i]) { lane = i; break; } }
                 if (lane != -1) {
                     keys_down[lane] = is_down;
                     if(is_down) { NoteNode* hit_note = handle_note_hit(lane, active_notes, &state, song_time, options->ghostTapping); if(hit_note && hit_note->data.sustainLength > 0) player_holding_note[lane] = hit_note; }
                     else { player_holding_note[lane] = NULL; }
                 }
             }
-             if (e.type == SDL_CONTROLLERAXISMOTION) {
+            if (e.type == SDL_CONTROLLERAXISMOTION) {
                 if (e.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERLEFT) {
                     bool is_down = e.caxis.value > TRIGGER_THRESHOLD;
                     keys_down[1] = is_down;
@@ -337,8 +341,14 @@ GameState run_game(SDL_Renderer* renderer, GameOptions* options, const char* cha
                 }
             }
         }
+
+        // --- MUDANÇA: Verifica a hotkey a cada frame do jogo ---
+        if (is_x_down && is_y_down && is_dpleft_down && is_dpup_down) {
+            log_message(LOG_LEVEL_INFO, "Combinação de saída pressionada durante o jogo.");
+            game_running = false;
+        }
         if (!game_running) break;
-        
+
         while (next_note < total_notes && all_notes[next_note].timestamp <= song_time + 2000) { NoteNode* n = malloc(sizeof(NoteNode)); n->data = all_notes[next_note++]; n->next = active_notes; active_notes = n; }
         for(int i=0; i<4; i++) { if(player_holding_note[i] != NULL) { double end_time = player_holding_note[i]->data.timestamp + player_holding_note[i]->data.sustainLength; if(!keys_down[i] && song_time < end_time) { state.combo = 0; state.misses++; player_holding_note[i] = NULL; } } }
         NoteNode** ptr = &active_notes;
@@ -362,7 +372,11 @@ GameState run_game(SDL_Renderer* renderer, GameOptions* options, const char* cha
 int main(int argc, char* argv[]) {
     init_logging();
     SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER);
-    Mix_OpenAudio(44100, MIX_DEFAULT_FORMAT, 4, 2048);
+
+    // --- MUDANÇA: Mudei para 1 canal (Mono) e adicionei verificação de erro ---
+    if (Mix_OpenAudio(44100, MIX_DEFAULT_FORMAT, 1, 2048) < 0) {
+        log_message(LOG_LEVEL_ERROR, "SDL_mixer não pôde ser inicializado! Erro: %s", Mix_GetError());
+    }
     
     for (int i = 0; i < SDL_NumJoysticks(); ++i) { if (SDL_IsGameController(i)) { controller = SDL_GameControllerOpen(i); if (controller) { log_message(LOG_LEVEL_INFO, "Controle detectado: %s", SDL_GameControllerName(controller)); break; } } }
     SDL_Window* window = SDL_CreateWindow("FNF Chart Renderer", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, SCREEN_WIDTH, SCREEN_HEIGHT, 0);
@@ -394,7 +408,6 @@ int main(int argc, char* argv[]) {
     int sel_diff_scroll_offset = 0;
     
     bool running = true;
-    // --- MUDANÇA: Novas variáveis para rastrear a combinação de 4 botões ---
     bool is_x_down = false;
     bool is_y_down = false;
     bool is_dpleft_down = false;
@@ -425,15 +438,12 @@ int main(int argc, char* argv[]) {
             }
             if (e.type == SDL_CONTROLLERBUTTONDOWN || e.type == SDL_CONTROLLERBUTTONUP) {
                 bool is_down = (e.type == SDL_CONTROLLERBUTTONDOWN);
-
-                // --- MUDANÇA: Rastreia o estado dos 4 botões da combinação ---
                 if (e.cbutton.button == SDL_CONTROLLER_BUTTON_X) is_x_down = is_down;
                 if (e.cbutton.button == SDL_CONTROLLER_BUTTON_Y) is_y_down = is_down;
                 if (e.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_LEFT) is_dpleft_down = is_down;
                 if (e.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_UP) is_dpup_down = is_down;
                 
                 if(is_down) {
-                    // Navegação normal (DPAD já é tratado pelo nav_up/down/left/right)
                     switch (e.cbutton.button) { 
                         case SDL_CONTROLLER_BUTTON_DPAD_UP: nav_up=1; break; 
                         case SDL_CONTROLLER_BUTTON_DPAD_DOWN: nav_down=1; break; 
@@ -450,21 +460,14 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        // --- MUDANÇA: Lógica para a nova combinação X+Y+DPLeft+DPUp ---
+        // --- MUDANÇA: Lógica de hotkey só se aplica à tela de seleção de música ---
         if (is_x_down && is_y_down && is_dpleft_down && is_dpup_down) {
             if (currentScreen == STATE_SONG_SELECT) {
                 log_message(LOG_LEVEL_INFO, "Combinação de saída pressionada. Saindo...");
                 running = false; // Sai do programa
-            } 
-            else if (currentScreen == STATE_RESULTS) {
-                log_message(LOG_LEVEL_INFO, "Combinação de saída pressionada. Voltando ao menu...");
-                currentScreen = STATE_SONG_SELECT; // Volta para a lista de músicas
             }
-            // Reseta os botões para a ação não se repetir no próximo frame
             is_x_down = is_y_down = is_dpleft_down = is_dpup_down = false;
-            // Consome os flags de navegação para evitar ação dupla
-            nav_accept = false;
-            nav_back = false;
+            nav_accept = false; nav_back = false;
         }
 
         // Lógica da máquina de estados (sem alterações)
@@ -526,7 +529,6 @@ int main(int argc, char* argv[]) {
             if(nav_accept || nav_back) { currentScreen = STATE_SONG_SELECT; } 
         }
 
-        // Lógica de renderização (sem alterações)
         SDL_SetRenderDrawColor(renderer, 20, 20, 20, 255); SDL_RenderClear(renderer);
         if (currentScreen == STATE_SONG_SELECT) {
             render_text_bitmap(renderer, "Selecione a Musica", SCREEN_WIDTH/2, 30, COLOR_WHITE, true);
