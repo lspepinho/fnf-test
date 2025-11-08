@@ -311,7 +311,8 @@ ChartNote* load_chart(const char* path, int* note_count, double* noteSpeed) {
     *note_count = 0;
 
     int n_arr_tok = -1;
-    // --- MUDANÇA: Procura pela primeira ocorrência de "notes" dentro de "song" ---
+    // --- MUDANÇA: LÓGICA DE FALLBACK ---
+    // 1. Tenta encontrar "notes" dentro de "song" (formato moderno)
     for (int i = 1; i < r; i++) {
         if (jsoneq(js, &t[i], "song") && t[i+1].type == JSMN_OBJECT) {
             int song_obj_end = skip_token(t, i + 1);
@@ -325,14 +326,25 @@ ChartNote* load_chart(const char* path, int* note_count, double* noteSpeed) {
         }
     }
 
+    // 2. Se não encontrou, tenta encontrar "notes" no nível principal (formato antigo/erect)
     if (n_arr_tok == -1) {
-        log_message(LOG_LEVEL_WARN, "Array 'notes' não foi encontrado em %s.", path);
+        for (int i = 1; i < r; i++) {
+            if (jsoneq(js, &t[i], "notes") && t[i+1].type == JSMN_ARRAY) {
+                n_arr_tok = i + 1;
+                break;
+            }
+        }
+    }
+
+    if (n_arr_tok == -1) {
+        log_message(LOG_LEVEL_WARN, "Nenhum array de notas ('song.notes' ou 'notes') foi encontrado em %s.", path);
         goto cleanup;
     }
+
     for(int i=1; i<r; i++) {
         if(jsoneq(js, &t[i], "speed")) {
             char speed_str[16];
-            snprintf(speed_str, t[i+1].end-t[i+1].start+1, "%s", js+t[i+1].start);
+            snprintf(speed_str, t[i+1].end - t[i+1].start + 1, "%s", js + t[i+1].start);
             *noteSpeed = atof(speed_str);
             break;
         }
@@ -342,7 +354,7 @@ ChartNote* load_chart(const char* path, int* note_count, double* noteSpeed) {
     for (int i = 0; i < t[n_arr_tok].size; i++) {
         jsmntok_t *sec_obj = &t[tok_idx];
         jsmntok_t *notes_tok = NULL;
-        bool section_is_player = false; 
+        bool section_must_hit = false; 
 
         int inner_idx = tok_idx + 1;
         for (int j = 0; j < sec_obj->size; j++) {
@@ -353,7 +365,7 @@ ChartNote* load_chart(const char* path, int* note_count, double* noteSpeed) {
             if (jsoneq(js, key, "mustHitSection")) {
                 jsmntok_t* val_tok = &t[inner_idx + 1];
                 if (val_tok->type == JSMN_PRIMITIVE && js[val_tok->start] == 't') {
-                    section_is_player = true;
+                    section_must_hit = true;
                 }
             }
             inner_idx = skip_token(t, inner_idx + 1);
@@ -368,31 +380,34 @@ ChartNote* load_chart(const char* path, int* note_count, double* noteSpeed) {
                 jsmntok_t* note_arr = &t[note_ptr];
                 char ts_s[32], ty_s[16], sus_s[32] = "0";
                 
+                if (note_arr->type != JSMN_ARRAY || note_arr->size < 2) {
+                    note_ptr = skip_token(t, note_ptr);
+                    continue;
+                }
+                
                 snprintf(ts_s, t[note_ptr+1].end - t[note_ptr+1].start + 1, "%s", js + t[note_ptr+1].start);
                 snprintf(ty_s, t[note_ptr+2].end - t[note_ptr+2].start + 1, "%s", js + t[note_ptr+2].start);
                 if (note_arr->size > 2) {
-                    snprintf(sus_s, t[note_ptr+3].end - t[note_ptr+3].start + 1, "%s", js + t[note_ptr+3].start);
+                    if(t[note_ptr+3].type == JSMN_PRIMITIVE){
+                        snprintf(sus_s, t[note_ptr+3].end - t[note_ptr+3].start + 1, "%s", js + t[note_ptr+3].start);
+                    }
                 }
                 
-                int nt = atoi(ty_s);
+                int raw_note_type = atoi(ty_s);
                 
-                // --- MUDANÇA UNIVERSAL ---
-                // Agora, a lógica é mais simples e robusta.
-                // A nota pertence ao jogador (isPlayer1) SE E SOMENTE SE:
-                // A seção for do jogador (mustHitSection: true)
-                bool is_player1_note = section_is_player;
-
-                // Para charts que trocam de lado, o tipo de nota do oponente (4-7)
-                // deve ser mapeado para as lanes do jogador (0-3).
-                // Em charts normais, as notas do oponente (0-3) serão apenas ignoradas.
-                int note_type_for_lane = nt % 4;
-
+                bool is_player_note;
+                if (section_must_hit) {
+                    is_player_note = (raw_note_type < 4);
+                } else {
+                    is_player_note = (raw_note_type >= 4);
+                }
+                
                 nb[*note_count].timestamp = atof(ts_s);
-                nb[*note_count].type = note_type_for_lane;
+                nb[*note_count].type = raw_note_type % 4;
                 nb[*note_count].sustainLength = atof(sus_s);
-                nb[*note_count].isPlayer1 = is_player1_note;
+                nb[*note_count].isPlayer1 = is_player_note;
                 nb[*note_count].wasHit = false;
-                nb[*note_count].canBeHit = is_player1_note;
+                nb[*note_count].canBeHit = is_player_note;
                 (*note_count)++;
                 
                 note_ptr = skip_token(t, note_ptr);
