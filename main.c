@@ -298,6 +298,18 @@ ChartNote* load_chart(const char* path, int* note_count, double* noteSpeed) {
     if (!nb) { goto cleanup; }
     *note_count = 0;
 
+    // --- NOVO: DETECÇÃO DE FORMATO PARA COMPATIBILIDADE ---
+    bool use_legacy_loading = false;
+    for (int i = 1; i < r; i++) {
+        if (jsoneq(js, &t[i], "format")) {
+            if (jsoneq(js, &t[i+1], "psych_v1_convert")) {
+                use_legacy_loading = true;
+                log_message(LOG_LEVEL_INFO, "Formato 'psych_v1_convert' detectado. Usando lógica de carregamento legada.");
+            }
+            break; // Encontrou a chave "format", não precisa procurar mais.
+        }
+    }
+
     int n_arr_tok = -1;
     // Tenta encontrar "notes" dentro de "song" (formato moderno)
     for (int i = 1; i < r; i++) {
@@ -378,25 +390,23 @@ ChartNote* load_chart(const char* path, int* note_count, double* noteSpeed) {
                 
                 int raw_note_type = atoi(ty_s);
                 
-                // --- LÓGICA RAIZ CORRIGIDA ---
+                // --- LÓGICA CONDICIONAL DE MAPEAMENTO DE NOTAS ---
                 bool is_player_note;
-                if (section_must_hit) {
+                if (use_legacy_loading) {
+                    // Lógica ANTIGA/LEGADA: Ignora 'mustHitSection' para determinar o dono da nota.
+                    // Apenas considera se o tipo da nota é para o lado esquerdo (0-3).
                     is_player_note = (raw_note_type < 4);
                 } else {
-                    is_player_note = (raw_note_type < 4);
+                    // Lógica NOVA (Correta da Psych Engine): 'mustHitSection' inverte o dono da nota.
+                    is_player_note = (raw_note_type < 4) == section_must_hit;
                 }
+
                 nb[*note_count].timestamp = atof(ts_s);
                 nb[*note_count].type = raw_note_type % 4;
                 nb[*note_count].sustainLength = atof(sus_s);
                 nb[*note_count].isPlayer1 = is_player_note;
                 nb[*note_count].wasHit = false;
-                nb[*note_count].canBeHit = is_player_note; // Jogabilidade depende da seção
-                nb[*note_count].timestamp = atof(ts_s);
-                nb[*note_count].type = raw_note_type % 4;
-                nb[*note_count].sustainLength = atof(sus_s);
-                nb[*note_count].isPlayer1 = is_player_note;
-                nb[*note_count].wasHit = false;
-                nb[*note_count].canBeHit = is_player_note; // Jogabilidade depende da seção
+                nb[*note_count].canBeHit = is_player_note;
                 (*note_count)++;
                 
                 note_ptr = skip_token(t, note_ptr);
