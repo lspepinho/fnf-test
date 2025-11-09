@@ -287,30 +287,19 @@ ChartNote* load_chart(const char* path, int* note_count, double* noteSpeed) {
     ChartNote* nb = NULL;
     jsmn_init(&p);
     int r = jsmn_parse(&p, js, l, NULL, 0);
-    if (r < 0) {
-        log_message(LOG_LEVEL_ERROR, "Falha ao analisar JSON (passagem 1, código %d) em %s.", r, path);
-        free(js);
-        return NULL;
-    }
+    if (r < 0) { log_message(LOG_LEVEL_ERROR, "Falha ao analisar JSON (passagem 1) em %s.", path); free(js); return NULL; }
     t = malloc(sizeof(jsmntok_t) * r);
-    if (!t) {
-        log_message(LOG_LEVEL_ERROR, "Falha ao alocar memória para tokens JSMN.");
-        free(js);
-        return NULL;
-    }
+    if (!t) { log_message(LOG_LEVEL_ERROR, "Falha ao alocar memória para tokens JSMN."); free(js); return NULL; }
     jsmn_init(&p);
     r = jsmn_parse(&p, js, l, t, r);
-    if (r < 0) {
-        log_message(LOG_LEVEL_ERROR, "Erro na segunda passagem do parser JSMN (código %d).", r);
-        goto cleanup;
-    }
+    if (r < 0) { log_message(LOG_LEVEL_ERROR, "Erro na segunda passagem do parser JSMN.", r); goto cleanup; }
+    
     nb = malloc(sizeof(ChartNote) * 65536);
-    if (!nb) {
-        goto cleanup;
-    }
+    if (!nb) { goto cleanup; }
     *note_count = 0;
 
     int n_arr_tok = -1;
+    // Tenta encontrar "notes" dentro de "song" (formato moderno)
     for (int i = 1; i < r; i++) {
         if (jsoneq(js, &t[i], "song") && t[i+1].type == JSMN_OBJECT) {
             int song_obj_end = skip_token(t, i + 1);
@@ -324,6 +313,7 @@ ChartNote* load_chart(const char* path, int* note_count, double* noteSpeed) {
         }
     }
 
+    // Se não encontrou, tenta encontrar "notes" no nível principal (formato antigo/erect)
     if (n_arr_tok == -1) {
         for (int i = 1; i < r; i++) {
             if (jsoneq(js, &t[i], "notes") && t[i+1].type == JSMN_ARRAY) {
@@ -333,10 +323,7 @@ ChartNote* load_chart(const char* path, int* note_count, double* noteSpeed) {
         }
     }
 
-    if (n_arr_tok == -1) {
-        log_message(LOG_LEVEL_WARN, "Nenhum array de notas ('song.notes' ou 'notes') foi encontrado em %s.", path);
-        goto cleanup;
-    }
+    if (n_arr_tok == -1) { log_message(LOG_LEVEL_WARN, "Nenhum array de notas ('song.notes' ou 'notes') foi encontrado em %s.", path); goto cleanup; }
 
     for(int i=1; i<r; i++) {
         if(jsoneq(js, &t[i], "speed")) {
@@ -391,29 +378,25 @@ ChartNote* load_chart(const char* path, int* note_count, double* noteSpeed) {
                 
                 int raw_note_type = atoi(ty_s);
                 
-                // --- MUDANÇA: LÓGICA HÍBRIDA FINAL ---
-                
-                // 1. O lado visual da nota (isPlayer1) é sempre definido pelo seu tipo bruto.
-                //    < 4 é o lado do player1 (BF, direita), >= 4 é o lado do player2 (Oponente, esquerda).
-                bool is_on_p1_side = (raw_note_type < 4);
-
-                // 2. A nota é "hittable" (canBeHit) se o lado que o jogador deve acertar
-                //    (definido por mustHitSection) corresponde ao lado da nota.
-                bool is_hittable;
+                // --- LÓGICA RAIZ CORRIGIDA ---
+                bool is_player_note;
                 if (section_must_hit) {
-                    // O jogador deve acertar o lado P1. A nota é hittable se ela for do lado P1.
-                    is_hittable = is_on_p1_side;
+                    is_player_note = (raw_note_type < 4);
                 } else {
-                    // O jogador deve acertar o lado P2. A nota é hittable se ela for do lado P2.
-                    is_hittable = !is_on_p1_side;
+                    is_player_note = (raw_note_type < 4);
                 }
-
                 nb[*note_count].timestamp = atof(ts_s);
                 nb[*note_count].type = raw_note_type % 4;
                 nb[*note_count].sustainLength = atof(sus_s);
-                nb[*note_count].isPlayer1 = is_on_p1_side; // Define a posição visual
+                nb[*note_count].isPlayer1 = is_player_note;
                 nb[*note_count].wasHit = false;
-                nb[*note_count].canBeHit = is_hittable; // Define se o jogador pode acertá-la
+                nb[*note_count].canBeHit = is_player_note; // Jogabilidade depende da seção
+                nb[*note_count].timestamp = atof(ts_s);
+                nb[*note_count].type = raw_note_type % 4;
+                nb[*note_count].sustainLength = atof(sus_s);
+                nb[*note_count].isPlayer1 = is_player_note;
+                nb[*note_count].wasHit = false;
+                nb[*note_count].canBeHit = is_player_note; // Jogabilidade depende da seção
                 (*note_count)++;
                 
                 note_ptr = skip_token(t, note_ptr);
@@ -443,28 +426,19 @@ bool file_exists(const char *filename) { FILE *file = fopen(filename, "r"); if (
 NoteNode* handle_note_hit(int lane, NoteNode* active_notes, GameState* state, Uint32 song_time, bool ghostTapping) {
     NoteNode* best_note = NULL;
     double min_diff = TIME_WINDOW_MISS + 1.0;
-    
-    // Flag para detectar se uma nota do oponente está na janela de tempo
-    bool opponent_note_in_window = false;
 
+    // Procura apenas por notas que o jogador PODE acertar
     for (NoteNode* curr = active_notes; curr != NULL; curr = curr->next) {
-        // Verifica se a nota está na lane correta e ainda não foi acertada
-        if (!curr->data.wasHit && (curr->data.type % 4 == lane)) {
+        if (curr->data.canBeHit && !curr->data.wasHit && (curr->data.type % 4 == lane)) {
             double diff = fabs(curr->data.timestamp - song_time);
-
-            // Se for uma nota do JOGADOR (canBeHit == true) e estiver na janela de tempo, a consideramos
-            if (curr->data.canBeHit && diff < min_diff) {
+            if (diff < min_diff) {
                 min_diff = diff;
                 best_note = curr;
-            } 
-            // Se for uma nota do OPONENTE (canBeHit == false) na janela de tempo, apenas registramos sua presença
-            else if (!curr->data.canBeHit && diff <= TIME_WINDOW_MISS) {
-                opponent_note_in_window = true;
             }
         }
     }
 
-    // Se encontramos uma nota do jogador para acertar, processamos o acerto normalmente.
+    // Se uma nota válida do jogador foi encontrada, processa o acerto.
     if (best_note) {
         best_note->data.wasHit = true;
         if (min_diff <= TIME_WINDOW_SICK) {
@@ -480,17 +454,36 @@ NoteNode* handle_note_hit(int lane, NoteNode* active_notes, GameState* state, Ui
         if(state->combo > state->highest_combo) state->highest_combo = state->combo;
         return best_note;
     } 
-    // Se não encontramos nota do jogador, SÓ aplicamos a penalidade de miss se NÃO houver uma nota do oponente no caminho.
-    else if (!ghostTapping && !opponent_note_in_window) {
+    // Se não encontrou nenhuma nota acertável, é um miss (se ghost tapping estiver off).
+    else if (!ghostTapping) {
         state->combo = 0;
         state->misses++;
     }
     
-    // Se chegamos aqui, ou o ghost tapping está ligado, ou havia uma nota do oponente, ou acertamos uma nota.
-    // Em todos esses casos onde não há penalidade, não retornamos nada.
     return NULL;
 }
-void draw_receptors(SDL_Renderer* renderer, const bool keys_down[], GameOptions* options) { int receptor_y = (options->scrollDir == SCROLL_DOWN) ? SCREEN_HEIGHT - 50 : 50; const int* p1_pos = options->isMiddleScroll ? P1_POS_X_MIDDLE : P1_POS_X_CLASSIC; const int* p2_pos = options->isMiddleScroll ? P2_POS_X_MIDDLE : P2_POS_X_CLASSIC; for (int i = 0; i < 4; i++) { SDL_Rect r_p1 = {p1_pos[i], receptor_y, NOTE_SIZE, NOTE_SIZE}; if (keys_down[i]) { SDL_SetRenderDrawColor(renderer, PLAYER_COLORS[i].r, PLAYER_COLORS[i].g, PLAYER_COLORS[i].b, 255); SDL_RenderFillRect(renderer, &r_p1); } else { SDL_SetRenderDrawColor(renderer, 100, 100, 100, 255); SDL_RenderFillRect(renderer, &r_p1); } SDL_Rect r_p2 = {p2_pos[i], receptor_y, NOTE_SIZE, NOTE_SIZE}; SDL_SetRenderDrawColor(renderer, PLAYER_COLORS[i].r, PLAYER_COLORS[i].g, PLAYER_COLORS[i].b, 100); SDL_RenderDrawRect(renderer, &r_p2); } }
+
+void draw_receptors(SDL_Renderer* renderer, const bool keys_down[], GameOptions* options) {
+    int receptor_y = (options->scrollDir == SCROLL_DOWN) ? SCREEN_HEIGHT - 50 : 50;
+    const int* p1_pos = options->isMiddleScroll ? P1_POS_X_MIDDLE : P1_POS_X_CLASSIC;
+    const int* p2_pos = options->isMiddleScroll ? P2_POS_X_MIDDLE : P2_POS_X_CLASSIC;
+
+    for (int i = 0; i < 4; i++) {
+        SDL_Rect r_p1 = {p1_pos[i], receptor_y, NOTE_SIZE, NOTE_SIZE};
+        if (keys_down[i]) {
+            SDL_SetRenderDrawColor(renderer, PLAYER_COLORS[i].r, PLAYER_COLORS[i].g, PLAYER_COLORS[i].b, 255);
+            SDL_RenderFillRect(renderer, &r_p1);
+        } else {
+            SDL_SetRenderDrawColor(renderer, 100, 100, 100, 255);
+            SDL_RenderFillRect(renderer, &r_p1);
+        }
+
+        SDL_Rect r_p2 = {p2_pos[i], receptor_y, NOTE_SIZE, NOTE_SIZE};
+        SDL_SetRenderDrawColor(renderer, PLAYER_COLORS[i].r, PLAYER_COLORS[i].g, PLAYER_COLORS[i].b, 100);
+        SDL_RenderDrawRect(renderer, &r_p2);
+    }
+}
+
 GameState run_game(SDL_Renderer* renderer, GameOptions* options, const char* chart_path) {
     int total_notes = 0;
     options->noteSpeed = 1.0;
