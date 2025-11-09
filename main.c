@@ -298,65 +298,87 @@ ChartNote* load_chart(const char* path, int* note_count, double* noteSpeed) {
     if (!nb) { goto cleanup; }
     *note_count = 0;
 
-    // --- NOVO: DETECÇÃO DE FORMATO PARA COMPATIBILIDADE ---
-    bool use_legacy_loading = false;
-    for (int i = 1; i < r; i++) {
-        if (jsoneq(js, &t[i], "format")) {
-            if (jsoneq(js, &t[i+1], "psych_v1_convert")) {
-                use_legacy_loading = true;
-                log_message(LOG_LEVEL_INFO, "Formato 'psych_v1_convert' detectado. Usando lógica de carregamento legada.");
-            }
-            break; // Encontrou a chave "format", não precisa procurar mais.
-        }
-    }
+    int notes_arr_tok = -1;
+    double temp_speed = -1.0;
+    bool is_legacy_format = false; // Flag para determinar a lógica a ser usada
 
-    int n_arr_tok = -1;
-    // Tenta encontrar "notes" dentro de "song" (formato moderno)
-    for (int i = 1; i < r; i++) {
-        if (jsoneq(js, &t[i], "song") && t[i+1].type == JSMN_OBJECT) {
-            int song_obj_end = skip_token(t, i + 1);
-            for (int j = i + 2; j < song_obj_end; j++) {
-                if (jsoneq(js, &t[j], "notes") && t[j+1].type == JSMN_ARRAY) {
-                    n_arr_tok = j + 1;
-                    break;
+    // --- LÓGICA DE DETECÇÃO DE FORMATO ---
+    int search_area_tok_idx = 0; // Padrão: busca na raiz do JSON (t[0])
+
+    if (r > 0 && t[0].type == JSMN_OBJECT) {
+        int key_tok_idx = 1;
+        for (int i = 0; i < t[0].size; i++) {
+            if (key_tok_idx >= r - 1) break;
+            jsmntok_t* key_token = &t[key_tok_idx];
+            jsmntok_t* val_token = &t[key_tok_idx + 1];
+
+            if (jsoneq(js, key_token, "song") && val_token->type == JSMN_OBJECT) {
+                search_area_tok_idx = key_tok_idx + 1;
+                break; 
+            }
+            if (jsoneq(js, key_token, "chart") && val_token->type == JSMN_OBJECT) {
+                int chart_obj_tok = key_tok_idx + 1;
+                int inner_key_idx = chart_obj_tok + 1;
+                for (int j = 0; j < t[chart_obj_tok].size; j++) {
+                    if (inner_key_idx >= r - 1) break;
+                    jsmntok_t* inner_key_tok = &t[inner_key_idx];
+                    jsmntok_t* inner_val_tok = &t[inner_key_idx + 1];
+                    if(jsoneq(js, inner_key_tok, "song") && inner_val_tok->type == JSMN_OBJECT) {
+                        search_area_tok_idx = inner_key_idx + 1;
+                        break;
+                    }
+                    inner_key_idx = skip_token(t, inner_key_idx + 1); 
                 }
+                if (search_area_tok_idx != 0) break;
             }
-            if (n_arr_tok != -1) break;
+            key_tok_idx = skip_token(t, key_tok_idx + 1);
         }
     }
-
-    // Se não encontrou, tenta encontrar "notes" no nível principal (formato antigo/erect)
-    if (n_arr_tok == -1) {
-        for (int i = 1; i < r; i++) {
-            if (jsoneq(js, &t[i], "notes") && t[i+1].type == JSMN_ARRAY) {
-                n_arr_tok = i + 1;
-                break;
-            }
-        }
+    
+    // Se a área de busca continua sendo a raiz, é um formato legado.
+    if (search_area_tok_idx == 0) {
+        is_legacy_format = true;
+        log_message(LOG_LEVEL_INFO, "Formato Legado (notas na raiz) detectado. Usando lógica de notas simplificada.");
     }
 
-    if (n_arr_tok == -1) { log_message(LOG_LEVEL_WARN, "Nenhum array de notas ('song.notes' ou 'notes') foi encontrado em %s.", path); goto cleanup; }
-
-    for(int i=1; i<r; i++) {
-        if(jsoneq(js, &t[i], "speed")) {
-            char speed_str[16];
-            snprintf(speed_str, t[i+1].end - t[i+1].start + 1, "%s", js + t[i+1].start);
-            *noteSpeed = atof(speed_str);
-            break;
+    if (search_area_tok_idx < r && t[search_area_tok_idx].type == JSMN_OBJECT) {
+        int key_tok_idx = search_area_tok_idx + 1;
+        for (int i = 0; i < t[search_area_tok_idx].size; i++) {
+             if (key_tok_idx >= r) break;
+             jsmntok_t* key_token = &t[key_tok_idx];
+             if(jsoneq(js, key_token, "notes")) {
+                 notes_arr_tok = key_tok_idx + 1;
+             }
+             if(jsoneq(js, key_token, "speed")) {
+                 char speed_str[16];
+                 jsmntok_t* val_token = &t[key_tok_idx + 1];
+                 snprintf(speed_str, val_token->end - val_token->start + 1, "%s", js + val_token->start);
+                 temp_speed = atof(speed_str);
+             }
+             key_tok_idx = skip_token(t, key_tok_idx + 1);
         }
     }
+    
+    if (temp_speed > 0) *noteSpeed = temp_speed;
 
-    int tok_idx = n_arr_tok + 1;
-    for (int i = 0; i < t[n_arr_tok].size; i++) {
+    if (notes_arr_tok == -1 || t[notes_arr_tok].type != JSMN_ARRAY) {
+        log_message(LOG_LEVEL_ERROR, "Nenhum array de notas ('notes') válido foi encontrado em %s.", path);
+        goto cleanup;
+    }
+
+    // --- PROCESSAMENTO DE NOTAS COM LÓGICA CONDICIONAL ---
+    int tok_idx = notes_arr_tok + 1;
+    for (int i = 0; i < t[notes_arr_tok].size; i++) {
         jsmntok_t *sec_obj = &t[tok_idx];
-        jsmntok_t *notes_tok = NULL;
+        jsmntok_t *notes_tok_in_section = NULL;
         bool section_must_hit = false; 
 
         int inner_idx = tok_idx + 1;
         for (int j = 0; j < sec_obj->size; j++) {
+            if (inner_idx >= r) break;
             jsmntok_t *key = &t[inner_idx];
             if (jsoneq(js, key, "sectionNotes")) {
-                notes_tok = &t[inner_idx + 1];
+                notes_tok_in_section = &t[inner_idx + 1];
             }
             if (jsoneq(js, key, "mustHitSection")) {
                 jsmntok_t* val_tok = &t[inner_idx + 1];
@@ -367,18 +389,18 @@ ChartNote* load_chart(const char* path, int* note_count, double* noteSpeed) {
             inner_idx = skip_token(t, inner_idx + 1);
         }
 
-        if (notes_tok && notes_tok->type == JSMN_ARRAY) {
+        if (notes_tok_in_section && notes_tok_in_section->type == JSMN_ARRAY) {
             int note_ptr = tok_idx + 1;
-            while(&t[note_ptr] != notes_tok) note_ptr++;
+            while(note_ptr < r && &t[note_ptr] != notes_tok_in_section) note_ptr++;
             note_ptr++;
             
-            for (int k = 0; k < notes_tok->size; k++) {
+            for (int k = 0; k < notes_tok_in_section->size; k++) {
+                if(note_ptr >= r) break;
                 jsmntok_t* note_arr = &t[note_ptr];
                 char ts_s[32], ty_s[16], sus_s[32] = "0";
                 
                 if (note_arr->type != JSMN_ARRAY || note_arr->size < 2) {
-                    note_ptr = skip_token(t, note_ptr);
-                    continue;
+                    note_ptr = skip_token(t, note_ptr); continue;
                 }
                 
                 snprintf(ts_s, t[note_ptr+1].end - t[note_ptr+1].start + 1, "%s", js + t[note_ptr+1].start);
@@ -390,14 +412,12 @@ ChartNote* load_chart(const char* path, int* note_count, double* noteSpeed) {
                 
                 int raw_note_type = atoi(ty_s);
                 
-                // --- LÓGICA CONDICIONAL DE MAPEAMENTO DE NOTAS ---
                 bool is_player_note;
-                if (use_legacy_loading) {
-                    // Lógica ANTIGA/LEGADA: Ignora 'mustHitSection' para determinar o dono da nota.
-                    // Apenas considera se o tipo da nota é para o lado esquerdo (0-3).
+                if (is_legacy_format) {
+                    // LÓGICA LEGADA: Apenas o tipo da nota importa. Ignora 'mustHitSection'.
                     is_player_note = (raw_note_type < 4);
                 } else {
-                    // Lógica NOVA (Correta da Psych Engine): 'mustHitSection' inverte o dono da nota.
+                    // LÓGICA MODERNA (Psych Engine): 'mustHitSection' inverte o dono das notas.
                     is_player_note = (raw_note_type < 4) == section_must_hit;
                 }
 
