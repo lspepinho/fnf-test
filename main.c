@@ -688,7 +688,10 @@ GameState run_game(SDL_Renderer* renderer, GameOptions* options, const char* cha
                 strcpy(state.rating, "MISS");
                 state.ratingTime = SDL_GetTicks();
             }
-            if (time_diff < -1000) {
+            
+            // CONDIÇÃO DE LIMPEZA ALTERADA: Limpa a nota somente depois que a cauda dela já passou.
+            double time_to_clean = entry->data.timestamp + entry->data.sustainLength - song_time;
+            if (time_to_clean < -1000) {
                 *ptr = entry->next;
                 free(entry);
             } else {
@@ -704,35 +707,75 @@ GameState run_game(SDL_Renderer* renderer, GameOptions* options, const char* cha
         const int* p1_pos = options->isMiddleScroll ? P1_POS_X_MIDDLE : P1_POS_X_CLASSIC;
         const int* p2_pos = options->isMiddleScroll ? P2_POS_X_MIDDLE : P2_POS_X_CLASSIC;
         
+        // =================================================================================
+        // ===== INÍCIO DA SEÇÃO DE DESENHO DE NOTAS CORRIGIDA =============================
+        // =================================================================================
         for (NoteNode* curr = active_notes; curr != NULL; curr = curr->next) {
-            if (curr->data.wasHit) continue;
             int type_mod_4 = curr->data.type % 4;
+            
+            // --- Cálculo de Posição (igual para cabeça e cauda) ---
             curr->rect.x = curr->data.isPlayer1 ? p1_pos[type_mod_4] : p2_pos[type_mod_4];
             curr->rect.w = NOTE_SIZE;
             curr->rect.h = NOTE_SIZE;
-            double time_diff = curr->data.timestamp - song_time;
-            double note_pos = time_diff * options->noteSpeed * 0.25;
-            int receptor_y = (options->scrollDir == SCROLL_DOWN) ? SCREEN_HEIGHT - 50 : 50;
-            curr->rect.y = (options->scrollDir == SCROLL_DOWN) ? receptor_y - note_pos : receptor_y + note_pos;
             
+            double time_diff = curr->data.timestamp - song_time;
+            double note_pos_offset = time_diff * options->noteSpeed * 0.25;
+            int receptor_y = (options->scrollDir == SCROLL_DOWN) ? SCREEN_HEIGHT - 50 : 50;
+            curr->rect.y = (options->scrollDir == SCROLL_DOWN) ? receptor_y - note_pos_offset : receptor_y + note_pos_offset;
+
+            // --- Desenho da Cauda (Sustain) ---
             if (curr->data.sustainLength > 0) {
-                double tail_len_px = curr->data.sustainLength * options->noteSpeed * 0.25;
-                curr->tail_rect.x = curr->rect.x + (NOTE_SIZE / 4);
-                curr->tail_rect.w = NOTE_SIZE / 2;
-                if (options->scrollDir == SCROLL_DOWN) {
-                    curr->tail_rect.y = curr->rect.y + NOTE_SIZE / 2 - tail_len_px;
-                    curr->tail_rect.h = tail_len_px;
-                } else {
-                    curr->tail_rect.y = curr->rect.y + NOTE_SIZE / 2;
-                    curr->tail_rect.h = tail_len_px;
+                double note_end_time = curr->data.timestamp + curr->data.sustainLength;
+
+                // Só desenha a cauda se o tempo dela ainda não acabou completamente.
+                if (song_time < note_end_time) {
+                    // Posição Y da cabeça da nota (onde a cauda termina)
+                    double head_y = curr->rect.y;
+
+                    // Posição Y onde a cauda "começa" (o lado mais próximo do receptor).
+                    // Esta posição é limitada ("clamped") para não passar da linha do receptor.
+                    double tail_anchor_y = head_y;
+                    if (options->scrollDir == SCROLL_DOWN && tail_anchor_y > receptor_y) {
+                        tail_anchor_y = receptor_y;
+                    } else if (options->scrollDir == SCROLL_UP && tail_anchor_y < receptor_y) {
+                        tail_anchor_y = receptor_y;
+                    }
+
+                    // A ponta mais distante da cauda é calculada com base no tempo final da nota
+                    double time_diff_end = note_end_time - song_time;
+                    double end_pos_offset = time_diff_end * options->noteSpeed * 0.25;
+                    
+                    curr->tail_rect.x = curr->rect.x + (NOTE_SIZE / 4);
+                    curr->tail_rect.w = NOTE_SIZE / 2;
+
+                    if (options->scrollDir == SCROLL_DOWN) {
+                        double tail_top_y = receptor_y - end_pos_offset;
+                        curr->tail_rect.y = tail_top_y;
+                        curr->tail_rect.h = tail_anchor_y - tail_top_y;
+                    } else { // SCROLL_UP
+                        curr->tail_rect.y = tail_anchor_y + NOTE_SIZE;
+                        double tail_bottom_y = receptor_y + end_pos_offset;
+                        curr->tail_rect.h = tail_bottom_y - curr->tail_rect.y;
+                    }
+
+                    if (curr->tail_rect.h < 0) curr->tail_rect.h = 0;
+
+                    SDL_SetRenderDrawColor(renderer, PLAYER_COLORS[type_mod_4].r, PLAYER_COLORS[type_mod_4].g, PLAYER_COLORS[type_mod_4].b, 150);
+                    SDL_RenderFillRect(renderer, &curr->tail_rect);
                 }
-                SDL_SetRenderDrawColor(renderer, PLAYER_COLORS[type_mod_4].r, PLAYER_COLORS[type_mod_4].g, PLAYER_COLORS[type_mod_4].b, 150);
-                SDL_RenderFillRect(renderer, &curr->tail_rect);
             }
-            SDL_SetRenderDrawColor(renderer, PLAYER_COLORS[type_mod_4].r, PLAYER_COLORS[type_mod_4].g, PLAYER_COLORS[type_mod_4].b, 255);
-            SDL_RenderFillRect(renderer, &curr->rect);
+
+            // --- Desenho da Cabeça da Nota ---
+            // A cabeça só é desenhada se ainda não foi acertada.
+            if (!curr->data.wasHit) {
+                SDL_SetRenderDrawColor(renderer, PLAYER_COLORS[type_mod_4].r, PLAYER_COLORS[type_mod_4].g, PLAYER_COLORS[type_mod_4].b, 255);
+                SDL_RenderFillRect(renderer, &curr->rect);
+            }
         }
-        
+        // =================================================================================
+        // ===== FIM DA SEÇÃO DE DESENHO DE NOTAS CORRIGIDA ================================
+        // =================================================================================
+
         char hud_buffer[64];
         sprintf(hud_buffer, "Score: %d", state.score);
         render_text_bitmap(renderer, hud_buffer, 10, 10, COLOR_WHITE, false);
